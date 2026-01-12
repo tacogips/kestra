@@ -39,6 +39,7 @@ import io.kestra.core.scheduler.vnodes.VNodes;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Timer;
 import jakarta.inject.Inject;
+import jakarta.inject.Named;
 import jakarta.inject.Singleton;
 import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
@@ -89,7 +90,7 @@ public class TriggerScheduler {
     private final Timer metricEvaluationLoopDuration;
     
     @Inject
-    public TriggerScheduler(TriggerStateStore triggerStateStore,
+    public TriggerScheduler(@Named("cached") TriggerStateStore triggerStateStore,
                             FlowMetaStore flowMetaStore,
                             MetricRegistry metricRegistry,
                             RunContextFactory runContextFactory,

@@ -65,7 +65,7 @@ public class TriggerEventHandler {
     private final QueueInterface<ExecutionKilled> executionKilledQueue;
 
     @Inject
-    public TriggerEventHandler(TriggerStateStore triggerStateStore,
+    public TriggerEventHandler(@Named("cached") TriggerStateStore triggerStateStore,
                                FlowMetaStore flowStateStore,
                                TriggerExecutionPublisher triggerExecutionPublisher,
                                RunContextFactory runContextFactory,

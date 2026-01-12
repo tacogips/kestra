@@ -11,6 +11,7 @@ import io.micronaut.context.annotation.Requires;
 import io.micronaut.core.util.CollectionUtils;
 import io.micronaut.scheduling.annotation.Scheduled;
 import jakarta.inject.Inject;
+import jakarta.inject.Named;
 import jakarta.inject.Singleton;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +37,7 @@ public class TriggerSchedulerMonitor implements Runnable {
     @Inject
     public TriggerSchedulerMonitor(MetricRegistry metricRegistry,
                                    ExecutionRepositoryInterface executionRepository,
-                                   TriggerStateStore triggerStateStore,
+                                   @Named("cached") TriggerStateStore triggerStateStore,
                                    DefaultScheduler defaultScheduler) {
         this.metricRegistry = metricRegistry;
         this.executionRepository = executionRepository;

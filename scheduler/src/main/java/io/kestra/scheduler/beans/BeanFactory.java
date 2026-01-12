@@ -8,14 +8,15 @@ import io.kestra.scheduler.stores.CachedTriggerStateStore;
 import io.kestra.scheduler.stores.DefaultFlowMetaStore;
 import io.kestra.scheduler.stores.FlowMetaStore;
 import io.micronaut.context.annotation.Factory;
-import io.micronaut.context.event.BeanCreatedEvent;
-import io.micronaut.context.event.BeanCreatedEventListener;
+import io.micronaut.context.annotation.Primary;
+import io.micronaut.context.annotation.Secondary;
 import jakarta.inject.Inject;
+import jakarta.inject.Named;
 import jakarta.inject.Singleton;
 
 @Factory
 public class BeanFactory {
-    
+
     @Inject
     SchedulerConfiguration schedulerConfiguration;
 
@@ -25,19 +26,13 @@ public class BeanFactory {
     @Singleton
     public FlowMetaStore flowMetaStore() {
         DefaultFlowMetaStore store = new DefaultFlowMetaStore(schedulerConfiguration, flowRepositoryInterface);
-        return schedulerConfiguration.isCacheDisable() ? store: new CachedFlowMetaStore(store, schedulerConfiguration);
+        return schedulerConfiguration.isCacheDisable() ? store : new CachedFlowMetaStore(store, schedulerConfiguration);
     }
 
+    @Named("cached")
     @Singleton
-    public static class TriggerStateStoreBeanDecorator implements BeanCreatedEventListener<TriggerStateStore> {
-
-        @Inject
-        SchedulerConfiguration configuration;
-        
-        @Override
-        public TriggerStateStore onCreated(BeanCreatedEvent<TriggerStateStore> event) {
-            TriggerStateStore bean = event.getBean();
-            return configuration.isCacheDisable() ? bean : new CachedTriggerStateStore(bean, configuration);
-        }
+    @Secondary
+    public TriggerStateStore triggerStateStore(@Primary TriggerStateStore triggerStateStore, SchedulerConfiguration configuration) {
+        return configuration.isCacheDisable() ? triggerStateStore : new CachedTriggerStateStore(triggerStateStore, configuration);
     }
 }

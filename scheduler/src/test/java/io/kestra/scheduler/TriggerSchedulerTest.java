@@ -1,6 +1,5 @@
 package io.kestra.scheduler;
 
-import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.metrics.MetricRegistry;
 import io.kestra.core.models.annotations.Plugin;
 import io.kestra.core.models.conditions.ConditionContext;
@@ -29,6 +28,7 @@ import io.kestra.scheduler.pubsub.TriggerWorkerJobPublisher;
 import io.kestra.scheduler.utils.CollectorTriggerExecutionPublisher;
 import io.kestra.scheduler.utils.InMemoryFlowMetaStore;
 import io.kestra.scheduler.utils.InMemoryTriggerStateStore;
+import io.micronaut.test.extensions.junit5.annotation.MicronautTest;
 import jakarta.inject.Inject;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -53,7 +53,7 @@ import java.util.stream.IntStream;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
-@KestraTest
+@MicronautTest
 class TriggerSchedulerTest {
 
     private static final Set<Integer> NODES_ASSIGNMENTS = Set.of(0);
@@ -216,6 +216,7 @@ class TriggerSchedulerTest {
     @Test
     void shouldSucceedScheduleScheduleOnDateTriggerGivenValidTimeZone() {
         // region [GIVEN]
+        SchedulerClock.setClock(Clock.fixed(Instant.parse("2025-10-31T00:00:00Z"), ZoneId.systemDefault()));
         FlowWithSource flow = Fixtures.flowWithScheduleOnDate(TEST_TZ, List.of(
             ZonedDateTime.parse("2025-11-02T00:00:00Z"),
             ZonedDateTime.parse("2025-11-04T00:00:00Z")

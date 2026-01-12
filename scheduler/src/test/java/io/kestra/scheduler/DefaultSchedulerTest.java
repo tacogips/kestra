@@ -1,6 +1,5 @@
 package io.kestra.scheduler;
 
-import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.lock.LockService;
 import io.kestra.core.metrics.MetricRegistry;
 import io.kestra.core.queues.QueueInterface;
@@ -34,8 +33,8 @@ import io.kestra.scheduler.utils.InMemorySchedulerEventQueue;
 import io.kestra.scheduler.utils.InMemoryTriggerEventQueue;
 import io.kestra.scheduler.utils.InMemoryTriggerStateStore;
 import io.micronaut.context.event.ApplicationEventPublisher;
+import io.micronaut.test.extensions.junit5.annotation.MicronautTest;
 import jakarta.inject.Inject;
-import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -62,8 +61,7 @@ import static org.assertj.core.api.AssertionsForInterfaceTypes.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-@Slf4j
-@KestraTest
+@MicronautTest
 class DefaultSchedulerTest {
 
     private static final SchedulerConfiguration SCHEDULER_CONFIGURATION = new SchedulerConfiguration(16, Duration.ofSeconds(5), 100);

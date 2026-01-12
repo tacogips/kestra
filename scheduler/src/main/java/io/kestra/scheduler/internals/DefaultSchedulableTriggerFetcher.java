@@ -16,6 +16,7 @@ import io.kestra.scheduler.SchedulableTriggerFetcher;
 import io.kestra.scheduler.models.TriggerEvaluationContext;
 import io.kestra.scheduler.stores.FlowMetaStore;
 import io.kestra.core.scheduler.store.TriggerStateStore;
+import jakarta.inject.Named;
 import jakarta.inject.Singleton;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,7 +47,7 @@ public class DefaultSchedulableTriggerFetcher implements SchedulableTriggerFetch
     private final PluginDefaultService pluginDefaultService;
 
     public DefaultSchedulableTriggerFetcher(RunContextFactory runContextFactory,
-                                            TriggerStateStore triggerStateStore,
+                                            @Named("cached") TriggerStateStore triggerStateStore,
                                             FlowMetaStore flowMetaStore,
                                             PluginDefaultService pluginDefaultService) {
         this.runContextFactory = runContextFactory;
