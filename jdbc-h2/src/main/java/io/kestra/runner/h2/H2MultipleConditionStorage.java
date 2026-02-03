@@ -4,7 +4,6 @@ import io.kestra.core.models.triggers.multipleflows.MultipleConditionWindow;
 import io.kestra.jdbc.runner.AbstractJdbcMultipleConditionStorage;
 import io.kestra.repository.h2.H2Repository;
 import io.kestra.repository.h2.H2RepositoryEnabled;
-import io.micronaut.context.ApplicationContext;
 import jakarta.inject.Named;
 import jakarta.inject.Singleton;
 
@@ -14,4 +13,5 @@ public class H2MultipleConditionStorage extends AbstractJdbcMultipleConditionSto
     public H2MultipleConditionStorage(@Named("multipleconditions") H2Repository<MultipleConditionWindow> repository) {
         super(repository);
     }
+
 }

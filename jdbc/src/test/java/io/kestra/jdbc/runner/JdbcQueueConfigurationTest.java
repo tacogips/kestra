@@ -10,17 +10,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class JdbcQueueConfigurationTest {
     @Test
-    void shouldFailWenMaxPollLessThanMinPoll() {
+    void shouldFailWhenMaxPollLessThanMinPoll() {
         var configuration = new JdbcQueueConfiguration(
-            Duration.ofSeconds(2),
-            Duration.ofSeconds(1),
+            Duration.ofMillis(2),
+            Duration.ofMillis(1),
             Duration.ofSeconds(60),
-            100,5,
+            100,
+            5,
             true
         );
 
         var exception = assertThrows(IllegalArgumentException.class, () -> configuration.computeSteps());
-        assertThat(exception.getMessage()).isEqualTo("'maxPollInterval' (PT1S) must be greater than 'minPollInterval' (PT2S)");
+        assertThat(exception.getMessage()).isEqualTo("'maxPollInterval' (PT1S) must be greater than or equal to 'minPollInterval' (PT2S)");
     }
 
     @Test
@@ -68,6 +69,23 @@ public class JdbcQueueConfigurationTest {
             new JdbcQueueConfiguration.Step(Duration.ofSeconds(15), Duration.ofSeconds(15)),
             new JdbcQueueConfiguration.Step(Duration.ofSeconds(30), Duration.ofSeconds(30)),
             new JdbcQueueConfiguration.Step(Duration.ofSeconds(60), Duration.ofSeconds(60))
+        );
+    }
+
+    @Test
+    void shouldComputeSingleStepWhenMinEqualsMax() {
+        var configuration = new JdbcQueueConfiguration(
+            Duration.ofMillis(1),
+            Duration.ofMillis(1),
+            Duration.ofSeconds(60),
+            100,
+            5,
+            true
+        );
+        List<JdbcQueueConfiguration.Step> steps = configuration.computeSteps();
+        assertThat(steps.size()).isEqualTo(1);
+        assertThat(steps).contains(
+            new JdbcQueueConfiguration.Step(Duration.ofSeconds(1), Duration.ZERO)
         );
     }
 }

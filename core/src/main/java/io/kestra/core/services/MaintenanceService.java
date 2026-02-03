@@ -7,7 +7,7 @@ public interface MaintenanceService {
 
     /**
      * Checks whether the cluster is currently in maintenance mode.
-     * 
+     *
      * @return {@code true} if the cluster is in maintenance mode
      */
     boolean isInMaintenanceMode();

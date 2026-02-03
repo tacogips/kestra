@@ -28,29 +28,24 @@ public abstract class AbstractJdbcExecutionQueuedStateStore extends AbstractJdbc
     }
 
     @Override
-    public void pop(String tenantId, String namespace, String flowId, BiConsumer<TransactionContext, Execution> consumer) {
-        this.jdbcRepository
-            .getDslContextWrapper()
-            .transaction(configuration -> {
-                var dslContext = DSL.using(configuration);
-                var select = dslContext
-                    .select(AbstractJdbcRepository.field("value"))
-                    .from(this.jdbcRepository.getTable())
-                    .where(buildTenantCondition(tenantId))
-                    .and(field("namespace").eq(namespace))
-                    .and(field("flow_id").eq(flowId))
-                    .orderBy(field("date").asc())
-                    .limit(1)
-                    .forUpdate()
-                    .skipLocked();
+    public void pop(TransactionContext txContext, String tenantId, String namespace, String flowId, BiConsumer<TransactionContext, Execution> consumer) {
+        var dslContext = txContext.unwrap(JdbcTransactionContext.class).getDslContext();
+        var select = dslContext
+            .select(VALUE_FIELD)
+            .from(this.jdbcRepository.getTable())
+            .where(buildTenantCondition(tenantId))
+            .and(field("namespace").eq(namespace))
+            .and(field("flow_id").eq(flowId))
+            .orderBy(field("date").asc())
+            .limit(1)
+            .forUpdate()
+            .skipLocked();
 
-                Optional<ExecutionQueued> maybeExecution = this.jdbcRepository.fetchOne(select);
-                if (maybeExecution.isPresent()) {
-                    var txContext = new JdbcTransactionContext(dslContext);
-                    consumer.accept(txContext, maybeExecution.get().getExecution());
-                    this.jdbcRepository.delete(maybeExecution.get());
-                }
-            });
+        Optional<ExecutionQueued> maybeExecution = this.jdbcRepository.fetchOne(select);
+        if (maybeExecution.isPresent()) {
+            consumer.accept(txContext, maybeExecution.get().getExecution());
+            this.jdbcRepository.delete(maybeExecution.get());
+        }
     }
 
     /**
@@ -62,7 +57,7 @@ public abstract class AbstractJdbcExecutionQueuedStateStore extends AbstractJdbc
             .transactionResult(configuration -> {
                 var select = DSL
                     .using(configuration)
-                    .select(AbstractJdbcRepository.field("value"))
+                    .select(VALUE_FIELD)
                     .from(this.jdbcRepository.getTable());
 
                 return this.jdbcRepository.fetch(select);
@@ -78,7 +73,7 @@ public abstract class AbstractJdbcExecutionQueuedStateStore extends AbstractJdbc
                 .using(configuration)
                 .deleteFrom(this.jdbcRepository.getTable())
                 .where(buildTenantCondition(execution.getTenantId()))
-                .and(field("key").eq(IdUtils.fromParts(execution.getTenantId(), execution.getNamespace(), execution.getFlowId(), execution.getId())))
+                .and(KEY_FIELD.eq(IdUtils.fromParts(execution.getTenantId(), execution.getNamespace(), execution.getFlowId(), execution.getId())))
                 .execute();
             });
     }

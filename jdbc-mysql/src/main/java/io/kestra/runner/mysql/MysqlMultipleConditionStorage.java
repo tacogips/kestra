@@ -6,11 +6,19 @@ import io.kestra.repository.mysql.MysqlRepository;
 import io.kestra.repository.mysql.MysqlRepositoryEnabled;
 import jakarta.inject.Named;
 import jakarta.inject.Singleton;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import org.jooq.Condition;
 
 @Singleton
 @MysqlRepositoryEnabled
 public class MysqlMultipleConditionStorage extends AbstractJdbcMultipleConditionStorage {
     public MysqlMultipleConditionStorage(@Named("multipleconditions") MysqlRepository<MultipleConditionWindow> repository) {
         super(repository);
+    }
+
+    @Override
+    protected Condition getEndDataCondition(){
+        return field("end_date").lt(OffsetDateTime.now(ZoneOffset.UTC));
     }
 }

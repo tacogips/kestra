@@ -36,7 +36,7 @@ public class ExecutionMessageHandler implements ExecutorMessageHandler<Execution
             // If we cannot send the execution event, we fail the execution
             return executionStateStore.lock(message.getId(), execution -> {
                 try {
-                    Execution failed = execution.failedExecutionFromExecutor(e).getExecution().withState(State.Type.FAILED);
+                    Execution failed = execution.failedExecutionFromExecutor(e).execution().withState(State.Type.FAILED);
                     ExecutionEvent event = new ExecutionEvent(failed, ExecutionEventType.TERMINATED);
                     this.executionEventQueue.emit(event);
                     return new ExecutorContext(failed);

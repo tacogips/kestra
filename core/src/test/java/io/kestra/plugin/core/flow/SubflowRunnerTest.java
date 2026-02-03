@@ -4,11 +4,14 @@ import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.junit.annotations.LoadFlows;
 import io.kestra.core.models.Label;
 import io.kestra.core.models.executions.Execution;
+import io.kestra.core.models.executions.ExecutionKind;
+import io.kestra.core.models.flows.Flow;
 import io.kestra.core.models.flows.State;
 import io.kestra.core.queues.QueueException;
 import io.kestra.core.queues.QueueFactoryInterface;
 import io.kestra.core.queues.QueueInterface;
 import io.kestra.core.repositories.ExecutionRepositoryInterface;
+import io.kestra.core.repositories.FlowRepositoryInterface;
 import io.kestra.core.runners.ExecutionEvent;
 import io.kestra.core.runners.ExecutionEventType;
 import io.kestra.core.runners.TestRunnerUtils;
@@ -16,8 +19,11 @@ import jakarta.inject.Inject;
 import jakarta.inject.Named;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -37,8 +43,15 @@ class SubflowRunnerTest {
     private ExecutionRepositoryInterface executionRepository;
 
     @Inject
+    private FlowRepositoryInterface flowRepository;
+
+    @Inject
     @Named(QueueFactoryInterface.EXECUTION_EVENT_NAMED)
     protected QueueInterface<ExecutionEvent> executionEventQueue;
+
+    @Inject
+    @Named(QueueFactoryInterface.EXECUTION_NAMED)
+    protected QueueInterface<Execution> executionQueue;
 
     @Test
     @LoadFlows({"flows/valids/subflow-inherited-labels-child.yaml", "flows/valids/subflow-inherited-labels-parent.yaml"})
@@ -115,5 +128,37 @@ class SubflowRunnerTest {
         assertThat(childExecution.stream().filter(e -> e.getState().getCurrent() == State.Type.SUCCESS).count()).isEqualTo(2);
         assertThat(childExecution.stream().filter(e -> e.getState().getCurrent() == State.Type.FAILED).count()).isEqualTo(2);
         closing.run();
+    }
+
+    @Test
+    @LoadFlows({"flows/valids/subflow-parent.yaml", "flows/valids/subflow-child.yaml", "flows/valids/subflow-grand-child.yaml"})
+    void subflowShouldTransmitKind() throws QueueException {
+        Flow parent = flowRepository.findById(MAIN_TENANT, "io.kestra.tests", "subflow-parent").orElseThrow();
+        Execution execution = Execution.newExecution(
+            parent,
+            (f, e) -> Collections.emptyMap(),
+            Collections.emptyList(),
+            Optional.empty(),
+            ExecutionKind.TEST
+        );
+        executionQueue.emit(execution);
+
+        Execution parentExecution = runnerUtils.awaitExecution(e -> e.getState().isTerminated(), execution);
+        assertThat(parentExecution.getState().getCurrent()).isEqualTo(State.Type.SUCCESS);
+        assertThat(parentExecution.getTaskRunList()).hasSize(1);
+        String childExecutionId = (String) parentExecution.findTaskRunsByTaskId("subflow").getFirst().getOutputs().get("executionId");
+        assertThat(childExecutionId).isNotBlank();
+
+        Optional<Execution> childExecution = executionRepository.findById(MAIN_TENANT, childExecutionId);
+        assertTrue(childExecution.isPresent());
+        assertThat(childExecution.get().getState().getCurrent()).isEqualTo(State.Type.SUCCESS);
+        assertThat(childExecution.get().getTaskRunList()).hasSize(1);
+        String grandChildExecutionId = (String) parentExecution.findTaskRunsByTaskId("subflow").getFirst().getOutputs().get("executionId");
+        assertThat(grandChildExecutionId).isNotBlank();
+
+        Optional<Execution> grandChildExecution = executionRepository.findById(MAIN_TENANT, grandChildExecutionId);
+        assertTrue(grandChildExecution.isPresent());
+        assertThat(grandChildExecution.get().getState().getCurrent()).isEqualTo(State.Type.SUCCESS);
+        assertThat(grandChildExecution.get().getTaskRunList()).hasSize(1);
     }
 }

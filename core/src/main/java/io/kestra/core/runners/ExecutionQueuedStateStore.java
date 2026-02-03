@@ -1,8 +1,7 @@
 package io.kestra.core.runners;
 
 import io.kestra.core.models.executions.Execution;
-import io.kestra.core.runners.ExecutionQueued;
-import io.kestra.core.runners.TransactionContext;
+import io.kestra.core.models.flows.FlowInterface;
 
 import java.util.function.BiConsumer;
 
@@ -23,7 +22,9 @@ public interface ExecutionQueuedStateStore {
     void save(TransactionContext txContext, ExecutionQueued executionQueued);
 
     /**
-     * Pop a queued execution: remove the oldest one and process it with the provided consumer.
+     * Pop the next queued execution.
+     * This method is intended to be part of a larger transaction,
+     * see {@link io.kestra.executor.ConcurrencyLimitStateStore#decrementAndPop(FlowInterface, ExecutionQueuedStateStore, BiConsumer)}
      */
-    void pop(String tenantId, String namespace, String flowId, BiConsumer<TransactionContext, Execution> consumer);
+    void pop(TransactionContext txContext, String tenantId, String namespace, String flowId, BiConsumer<TransactionContext, Execution> consumer);
 }

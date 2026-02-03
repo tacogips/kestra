@@ -1,16 +1,19 @@
 package io.kestra.core.services;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import io.kestra.core.exceptions.FlowProcessingException;
 import io.kestra.core.exceptions.IllegalVariableEvaluationException;
 import io.kestra.core.models.executions.Execution;
 import io.kestra.core.models.flows.*;
 import io.kestra.core.models.flows.check.Check;
+import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.models.topologies.FlowTopology;
 import io.kestra.core.models.triggers.AbstractTrigger;
 import io.kestra.core.models.triggers.TriggerId;
 import io.kestra.core.models.triggers.WorkerTriggerInterface;
 import io.kestra.core.models.validations.ModelValidator;
 import io.kestra.core.models.validations.ValidateConstraintViolation;
+import io.kestra.core.plugins.PluginRegistry;
 import io.kestra.core.queues.DispatchQueueInterface;
 import io.kestra.core.queues.QueueException;
 import io.kestra.core.repositories.FlowRepositoryInterface;
@@ -22,24 +25,32 @@ import io.kestra.core.scheduler.events.TriggerCreated;
 import io.kestra.core.scheduler.events.TriggerDeleted;
 import io.kestra.core.scheduler.events.TriggerEvent;
 import io.kestra.core.scheduler.events.TriggerUpdated;
+import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.topologies.FlowTopologyService;
 import io.kestra.core.utils.ExecutorsUtils;
 import io.kestra.core.utils.ListUtils;
+import io.kestra.plugin.core.flow.Pause;
 import jakarta.annotation.PreDestroy;
 import jakarta.inject.Inject;
 import jakarta.inject.Provider;
 import jakarta.inject.Singleton;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.ClassUtils;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * Provides business logic for manipulating flow objects.
@@ -72,7 +83,7 @@ public class FlowService {
     private TriggerEventQueue triggerEventQueue;
 
     @Inject
-    private FlowValidationService flowValidationService;
+    private PluginRegistry pluginRegistry;
 
     private final ExecutorService executorService;
 
@@ -243,6 +254,7 @@ public class FlowService {
         // For other validation errors, provide context
         return "Validation error: " + message;
     }
+
     /**
      * Evaluates all checks defined in the given flow using the provided inputs.
      * <p>
@@ -275,9 +287,9 @@ public class FlowService {
                     );
                     falseConditions.add(Check
                         .builder()
-                            .message("Failed to evaluate check condition. Cause: " + e.getMessage())
-                            .behavior(Check.Behavior.BLOCK_EXECUTION)
-                            .style(Check.Style.ERROR)
+                        .message("Failed to evaluate check condition. Cause: " + e.getMessage())
+                        .behavior(Check.Behavior.BLOCK_EXECUTION)
+                        .style(Check.Style.ERROR)
                         .build()
                     );
                 }
@@ -288,62 +300,62 @@ public class FlowService {
     }
 
     /**
-     * Validates the given flow source. The YAML source can contain one or many objects.
-     * <p>
-     * Individual validation methods are provided inside the {@link FlowValidationService}.
+     * Validates the given flow sources.
      *
-     * @param tenantId  The tenant identifier.
-     * @param flows     The YAML source.
-     * @return  The list validation constraint violations.
+     * @param tenantId    The tenant identifier.
+     * @param flowSources The flow sources to validate.
+     * @return The list of validation constraint violations.
      */
-    public List<ValidateConstraintViolation> validate(final String tenantId, final String flows) {
+    public List<ValidateConstraintViolation> validate(final String tenantId, final List<FlowSource> flowSources) {
         AtomicInteger index = new AtomicInteger(0);
-        return Stream
-            .of(flows.split("\\n+---\\n*?"))
-            .map(source -> {
-                ValidateConstraintViolation.ValidateConstraintViolationBuilder<?, ?> validateConstraintViolationBuilder = ValidateConstraintViolation.builder();
-                validateConstraintViolationBuilder.index(index.getAndIncrement());
+        List<ValidateConstraintViolation> constraints = new ArrayList<>();
+        flowSources.forEach(flowSource -> {
+            ValidateConstraintViolation.ValidateConstraintViolationBuilder<?, ?> constraintsBuilder = ValidateConstraintViolation.builder();
+            constraintsBuilder.index(index.getAndIncrement());
+            constraintsBuilder.filename(flowSource.filename());
 
-                try {
-                    FlowWithSource flow = pluginDefaultService.parseFlowWithVersionDefaults(tenantId, source, true);
-                    Integer sentRevision = flow.getRevision();
-                    if (sentRevision != null) {
-                        Integer lastRevision = Optional.ofNullable(flowRepository.lastRevision(tenantId, flow.getNamespace(), flow.getId()))
-                            .orElse(0);
-                        validateConstraintViolationBuilder.outdated(!sentRevision.equals(lastRevision + 1));
-                    }
+            try {
+                String source = flowSource.content();
+                FlowWithSource flow = pluginDefaultService.parseFlowWithVersionDefaults(tenantId, source, true);
 
-                    validateConstraintViolationBuilder.deprecationPaths(flowValidationService.deprecationPaths(flow));
-                    validateConstraintViolationBuilder.warnings(flowValidationService.warnings(flow, tenantId));
-                    validateConstraintViolationBuilder.infos(flowValidationService.relocations(source).stream().map(relocation -> relocation.from() + " is replaced by " + relocation.to()).toList());
-                    validateConstraintViolationBuilder.flow(flow.getId());
-                    validateConstraintViolationBuilder.namespace(flow.getNamespace());
-
-                    // Do not perform a strict parsing validation to ignore unknown
-                    // properties that might be injecting through default values.
-                    modelValidator.validate(pluginDefaultService.injectAllDefaults(flow, false));
-
-                } catch (ConstraintViolationException e) {
-                    String friendlyMessage = formatValidationError(e.getMessage());
-                    validateConstraintViolationBuilder.constraints(friendlyMessage);
-                } catch (FlowProcessingException e) {
-                    if (e.getCause() instanceof ConstraintViolationException cve) {
-                        String friendlyMessage = formatValidationError(cve.getMessage());
-                        validateConstraintViolationBuilder.constraints(friendlyMessage);
-                    } else {
-                        Throwable cause = e.getCause() != null ? e.getCause() : e;
-                        validateConstraintViolationBuilder.constraints("Unable to validate the flow: " + cause.getMessage());
-                    }
-                } catch (RuntimeException re) {
-                    // In case of any error, we add a validation violation so the error is displayed in the UI.
-                    // We may change that by throwing an internal error and handle it in the UI, but this should not occur except for rare cases
-                    // in dev like incompatible plugin versions.
-                    log.error("Unable to validate the flow", re);
-                    validateConstraintViolationBuilder.constraints("Unable to validate the flow: " + re.getMessage());
+                Integer sentRevision = flow.getRevision();
+                if (sentRevision != null) {
+                    Integer lastRevision = Optional.ofNullable(flowRepository.lastRevision(tenantId, flow.getNamespace(), flow.getId())).orElse(0);
+                    constraintsBuilder.outdated(!sentRevision.equals(lastRevision + 1));
                 }
-                return validateConstraintViolationBuilder.build();
-            })
-            .collect(Collectors.toList());
+
+                constraintsBuilder.deprecationPaths(deprecationPaths(flow));
+                constraintsBuilder.warnings(warnings(flow, tenantId));
+                constraintsBuilder.infos(relocations(source).stream().map(relocation -> relocation.from() + " is replaced by " + relocation.to()).toList());
+                constraintsBuilder.flow(flow.getId());
+                constraintsBuilder.namespace(flow.getNamespace());
+
+                // Do not perform a strict parsing validation to ignore unknown
+                // properties that might be injecting through default values.
+                modelValidator.validate(pluginDefaultService.injectAllDefaults(flow, false));
+            } catch (ConstraintViolationException e) {
+                String friendlyMessage = formatValidationError(e.getMessage());
+                constraintsBuilder.constraints(friendlyMessage);
+            } catch (FlowProcessingException e) {
+                if (e.getCause() instanceof ConstraintViolationException cve) {
+                    String friendlyMessage = formatValidationError(cve.getMessage());
+                    constraintsBuilder.constraints(friendlyMessage);
+                } else {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    constraintsBuilder.constraints("Unable to validate the flow: " + cause.getMessage());
+                }
+            } catch (RuntimeException e) {
+                // In case of any error, we add a validation violation so the error is displayed in the UI.
+                // We may change that by throwing an internal error and handle it in the UI, but this should not occur except for rare cases
+                // in dev like incompatible plugin versions.
+                log.error("Unable to validate the flow", e);
+                constraintsBuilder.constraints("Unable to validate the flow: " + e.getMessage());
+            }
+
+            constraints.add(constraintsBuilder.build());
+        });
+
+        return constraints;
     }
 
     public FlowWithSource importFlow(String tenantId, String source) throws FlowProcessingException {
@@ -351,7 +363,6 @@ public class FlowService {
     }
 
     public FlowWithSource importFlow(String tenantId, String source, boolean dryRun) throws FlowProcessingException {
-
         final GenericFlow flow = GenericFlow.fromYaml(tenantId, source);
 
         Optional<FlowWithSource> maybeExisting = flowRepository.findByIdWithSource(
@@ -364,7 +375,7 @@ public class FlowService {
 
         // Inject default plugin 'version' props before converting
         // to flow to correctly resolve all plugin type.
-        FlowWithSource flowToImport = pluginDefaultService.injectVersionDefaults(flow, false);
+        FlowWithSource flowToImport = pluginDefaultService.injectVersionDefaults(flow, false, true);
 
         if (dryRun) {
             return maybeExisting
@@ -394,6 +405,196 @@ public class FlowService {
 
     public Optional<Flow> findById(String tenantId, String namespace, String flowId) {
         return flowRepository.findById(tenantId, namespace, flowId);
+    }
+
+    public Stream<FlowInterface> keepLastVersion(Stream<FlowInterface> stream) {
+        return keepLastVersionCollector(stream);
+    }
+
+    public List<String> deprecationPaths(Flow flow) {
+        return deprecationTraversal("", flow).toList();
+    }
+
+
+    public List<String> warnings(Flow flow, String tenantId) {
+        if (flow == null) {
+            return Collections.emptyList();
+        }
+
+        List<String> warnings = new ArrayList<>(checkValidSubflows(flow, tenantId));
+
+        List<io.kestra.plugin.core.trigger.Flow> flowTriggers = ListUtils.emptyOnNull(flow.getTriggers()).stream()
+            .filter(io.kestra.plugin.core.trigger.Flow.class::isInstance)
+            .map(io.kestra.plugin.core.trigger.Flow.class::cast)
+            .toList();
+        flowTriggers.forEach(flowTrigger -> {
+            if (ListUtils.emptyOnNull(flowTrigger.getConditions()).isEmpty() && flowTrigger.getPreconditions() == null) {
+                warnings.add("This flow will be triggered for EVERY execution of EVERY flow on your instance. We recommend adding the preconditions property to the Flow trigger '" + flowTrigger.getId() + "'.");
+            }
+        });
+
+        // add warning for runnable properties (timeout, workerGroup, taskCache) when used not in a runnable
+        flow.allTasksWithChilds().forEach(task -> {
+            if (!(task instanceof RunnableTask<?>)) {
+                if (task.getTimeout() != null && !(task instanceof Pause)) {
+                    warnings.add("The task '" + task.getId() + "' cannot use the 'timeout' property as it's only relevant for runnable tasks.");
+                }
+                if (task.getTaskCache() != null) {
+                    warnings.add("The task '" + task.getId() + "' cannot use the 'taskCache' property as it's only relevant for runnable tasks.");
+                }
+                if (task.getWorkerGroup() != null) {
+                    warnings.add("The task '" + task.getId() + "' cannot use the 'workerGroup' property as it's only relevant for runnable tasks.");
+                }
+            }
+        });
+
+        return warnings;
+    }
+
+    public List<Relocation> relocations(String flowSource) {
+        try {
+            Map<String, Class<?>> aliases = pluginRegistry.plugins().stream()
+                .flatMap(plugin -> plugin.getAliases().values().stream())
+                .collect(Collectors.toMap(
+                    Map.Entry::getKey,
+                    Map.Entry::getValue,
+                    (existing, duplicate) -> existing
+                ));
+            Map<String, Object> stringObjectMap = JacksonMapper.ofYaml().readValue(flowSource, JacksonMapper.MAP_TYPE_REFERENCE);
+            return relocations(aliases, stringObjectMap);
+        } catch (JsonProcessingException e) {
+            // silent failure (we don't compromise the app / response for warnings)
+            return Collections.emptyList();
+        }
+    }
+
+    // check if subflow is present in given namespace
+    public List<String> checkValidSubflows(Flow flow, String tenantId) {
+        List<io.kestra.plugin.core.flow.Subflow> subFlows = ListUtils.emptyOnNull(flow.getTasks()).stream()
+            .filter(io.kestra.plugin.core.flow.Subflow.class::isInstance)
+            .map(io.kestra.plugin.core.flow.Subflow.class::cast)
+            .toList();
+
+        List<String> violations = new ArrayList<>();
+
+        subFlows.forEach(subflow -> {
+            String regex = ".*\\{\\{.+}}.*"; // regex to check if string contains pebble
+            String subflowId = subflow.getFlowId();
+            String namespace = subflow.getNamespace();
+            if ((subflowId != null && subflowId.matches(regex)) || (namespace != null && namespace.matches(regex))) {
+                return;
+            }
+            if (subflowId == null || namespace == null) {
+                // those fields are mandatory so the mandatory validation will apply
+                return;
+            }
+            Optional<Flow> optional = findById(tenantId, subflow.getNamespace(), subflow.getFlowId());
+
+            if (optional.isEmpty()) {
+                violations.add("The subflow '" + subflow.getFlowId() + "' not found in namespace '" + subflow.getNamespace() + "'.");
+            } else if (optional.get().isDisabled()) {
+                violations.add("The subflow '" + subflow.getFlowId() + "' is disabled in namespace '" + subflow.getNamespace() + "'.");
+            }
+        });
+
+        return violations;
+    }
+
+    public record Relocation(String from, String to) {}
+
+    @SuppressWarnings("unchecked")
+    private List<Relocation> relocations(Map<String, Class<?>> aliases, Map<String, Object> stringObjectMap) {
+        List<Relocation> relocations = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : stringObjectMap.entrySet()) {
+            if (entry.getValue() instanceof String value && aliases.containsKey(value)) {
+                relocations.add(new Relocation(value, aliases.get(value).getName()));
+            }
+
+            if (entry.getValue() instanceof Map<?, ?> value) {
+                relocations.addAll(relocations(aliases, (Map<String, Object>) value));
+            }
+
+            if (entry.getValue() instanceof List<?> value) {
+                List<Relocation> listAliases = value.stream().flatMap(item -> {
+                    if (item instanceof Map<?, ?> map) {
+                        return relocations(aliases, (Map<String, Object>) map).stream();
+                    }
+                    return Stream.empty();
+                }).toList();
+                relocations.addAll(listAliases);
+            }
+        }
+
+        return relocations;
+    }
+
+
+    private Stream<String> deprecationTraversal(String prefix, Object object) {
+        if (object == null || ClassUtils.isPrimitiveOrWrapper(object.getClass()) || String.class.equals(object.getClass())) {
+            return Stream.empty();
+        }
+
+        return Stream.concat(
+            object.getClass().isAnnotationPresent(Deprecated.class) ? Stream.of(prefix) : Stream.empty(),
+            allGetters(object.getClass())
+                .flatMap(method -> {
+                    try {
+                        Object fieldValue = method.invoke(object);
+
+                        if (fieldValue instanceof Iterable<?> iterableValue) {
+                            fieldValue = StreamSupport.stream(iterableValue.spliterator(), false).toArray(Object[]::new);
+                        }
+
+                        String fieldName = method.getName().substring(3, 4).toLowerCase() + method.getName().substring(4);
+                        Stream<String> additionalDeprecationPaths = Stream.empty();
+                        if (fieldValue instanceof Object[] arrayValue) {
+                            additionalDeprecationPaths = IntStream.range(0, arrayValue.length).boxed().flatMap(i -> deprecationTraversal(fieldName + "[%d]".formatted(i), arrayValue[i]));
+                        }
+
+                        return Stream.concat(
+                            method.isAnnotationPresent(Deprecated.class) && fieldValue != null ? Stream.of(prefix.isEmpty() ? fieldName : prefix + "." + fieldName) : Stream.empty(),
+                            additionalDeprecationPaths
+                        );
+                    } catch (IllegalAccessException | InvocationTargetException e) {
+                        // silent failure (we don't compromise the app / response for warnings)
+                    }
+
+                    return Stream.empty();
+                })
+        );
+    }
+
+    private Stream<Method> allGetters(Class<?> clazz) {
+        return Arrays.stream(clazz.getMethods())
+            .filter(m -> !m.getDeclaringClass().equals(Object.class))
+            .filter(method -> method.getName().startsWith("get") && method.getName().length() > 3 && method.getParameterCount() == 0)
+            .filter(method -> !method.getReturnType().equals(Void.TYPE))
+            .filter(method -> !Modifier.isStatic(method.getModifiers()));
+    }
+
+    public Collection<FlowInterface> keepLastVersion(List<FlowInterface> flows) {
+        return keepLastVersionCollector(flows.stream()).toList();
+    }
+
+    public Stream<FlowInterface> keepLastVersionCollector(Stream<FlowInterface> stream) {
+        // Use a Map to track the latest version of each flow
+        Map<String, FlowInterface> latestFlows = new HashMap<>();
+
+        stream.forEach(flow -> {
+            String uid = flow.uidWithoutRevision();
+            FlowInterface existing = latestFlows.get(uid);
+
+            // Update only if the current flow has a higher revision
+            if (existing == null || flow.getRevision() > existing.getRevision()) {
+                latestFlows.put(uid, flow);
+            } else if (flow.getRevision().equals(existing.getRevision()) && flow.isDeleted()) {
+                // Edge case: prefer deleted flow with the same revision
+                latestFlows.put(uid, flow);
+            }
+        });
+
+        // Return the non-deleted flows
+        return latestFlows.values().stream().filter(flow -> !flow.isDeleted());
     }
 
     public boolean removeUnwanted(Flow f, Execution execution) {
@@ -474,7 +675,7 @@ public class FlowService {
             throw new IllegalStateException("Requested Flow is disabled.");
         }
 
-        if (flow instanceof FlowWithException fwe ) {
+        if (flow instanceof FlowWithException fwe) {
             throw new IllegalStateException("Requested Flow is not valid. Error: " + fwe.getException());
         }
         return flow;

@@ -18,7 +18,6 @@ import io.kestra.core.models.flows.State;
 import io.kestra.core.models.triggers.TriggerId;
 import io.kestra.core.queues.QueueFactoryInterface;
 import io.kestra.core.queues.QueueInterface;
-import io.kestra.core.queues.QueueService;
 import io.kestra.core.repositories.ArrayListTotal;
 import io.kestra.core.repositories.ExecutionRepositoryInterface;
 import io.kestra.core.runners.QueueIndexerRepository;
@@ -99,11 +98,10 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
     @SuppressWarnings("unchecked")
     public AbstractJdbcExecutionRepository(
         io.kestra.jdbc.AbstractJdbcRepository<Execution> jdbcRepository,
-        QueueService queueService,
         ApplicationContext applicationContext,
         JdbcFilterService filterService
     ) {
-        super(jdbcRepository, queueService);
+        super(jdbcRepository);
         this.eventPublisher = applicationContext.getBean(ApplicationEventPublisher.class);
         this.kestraConfig = applicationContext.getBean(KestraConfig.class);
 
@@ -164,7 +162,7 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
 
     public Optional<Execution> findById(String tenantId, String id, boolean allowDeleted, boolean withAccessControl) {
         Condition defaultFilter = withAccessControl ? this.defaultFilter(tenantId, allowDeleted) : this.defaultFilterWithNoACL(tenantId, allowDeleted);
-        Condition condition = field("key").eq(id);
+        Condition condition = KEY_FIELD.eq(id);
         return findOne(defaultFilter, condition);
     }
 
@@ -263,9 +261,9 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
         @Nullable ChildFilter childFilter,
         boolean deleted
     ) {
-        SelectConditionStep<Record1<Object>> select = context
+        var select = context
             .select(
-                field("value")
+                VALUE_FIELD
             )
             .from(this.jdbcRepository.getTable())
             .where(this.defaultFilter(tenantId, deleted));
@@ -667,7 +665,7 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
 
                 Select<Record2<Object, Integer>> subquery = context
                     .select(
-                        field("value"),
+                        VALUE_FIELD,
                         DSL.rowNumber().over(
                             DSL.partitionBy(
                                 field("namespace"),
@@ -758,7 +756,7 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
                 executions.forEach(execution -> eventPublisher.publishEvent(CrudEvent.delete(execution)));
 
                 return context.delete(this.jdbcRepository.getTable())
-                    .where(field("key", String.class).in(executions.stream().map(Execution::getId).toList()))
+                    .where(KEY_FIELD.in(executions.stream().map(Execution::getId).toList()))
                     .execute();
             });
     }
@@ -771,9 +769,9 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
                 DSLContext context = DSL.using(configuration);
 
                 SelectForUpdateOfStep<Record1<Object>> from = context
-                    .select(field("value"))
+                    .select(VALUE_FIELD)
                     .from(this.jdbcRepository.getTable())
-                    .where(field("key").eq(executionId))
+                    .where(KEY_FIELD.eq(executionId))
                     .and(this.defaultFilter())
                     .forUpdate();
 
@@ -892,7 +890,7 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
                 filterService,
                 filters,
                 getFieldsMapping()
-            );
+            ).and(NORMAL_KIND_CONDITION);
 
             Record result = selectConditionStep.fetchOne();
             if (result != null) {

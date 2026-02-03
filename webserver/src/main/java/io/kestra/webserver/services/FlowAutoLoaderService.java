@@ -16,8 +16,7 @@ import io.micronaut.http.client.HttpClient;
 import io.micronaut.http.client.annotation.Client;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
 import java.util.Objects;
@@ -30,10 +29,10 @@ import static io.kestra.core.utils.Rethrow.throwFunction;
  * Service for automatically loading initial flows from the community blueprints at server startup.
  */
 @Singleton
+@Slf4j
 @WebServerEnabled
 @Requires(property = "kestra.tutorial-flows.enabled", value = "true", defaultValue = "true")
 public class FlowAutoLoaderService {
-    private static final Logger log = LoggerFactory.getLogger(FlowAutoLoaderService.class);
 
     public static final Pattern NAMESPACE_FROM_FLOW_SOURCE_PATTERN = Pattern.compile("^namespace: \\S*", Pattern.MULTILINE);
     

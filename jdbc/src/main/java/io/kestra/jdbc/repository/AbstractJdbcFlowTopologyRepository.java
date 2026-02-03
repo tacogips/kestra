@@ -43,7 +43,7 @@ public abstract class AbstractJdbcFlowTopologyRepository extends AbstractJdbcRep
 
                 Select<Record1<Object>> from = DSL
                     .using(configuration)
-                    .select(field("value"))
+                    .select(VALUE_FIELD)
                     .from(this.jdbcRepository.getTable())
                     .where(DSL.or(ors));
 
@@ -68,7 +68,7 @@ public abstract class AbstractJdbcFlowTopologyRepository extends AbstractJdbcRep
 
                 Select<Record1<Object>> from = DSL
                     .using(configuration)
-                    .select(field("value"))
+                    .select(VALUE_FIELD)
                     .from(this.jdbcRepository.getTable())
                     .where(DSL.or(ors));
 
@@ -90,7 +90,7 @@ public abstract class AbstractJdbcFlowTopologyRepository extends AbstractJdbcRep
 
                 Select<Record1<Object>> from = DSL
                     .using(configuration)
-                    .select(field("value"))
+                    .select(VALUE_FIELD)
                     .from(this.jdbcRepository.getTable())
                     .where(tenantSource.and(tenantDest).and(sourceCondition));
 
@@ -113,7 +113,7 @@ public abstract class AbstractJdbcFlowTopologyRepository extends AbstractJdbcRep
 
                 Select<Record1<Object>> from = DSL
                     .using(configuration)
-                    .select(field("value"))
+                    .select(VALUE_FIELD)
                     .from(this.jdbcRepository.getTable())
                     .where(DSL.or(ors));
 
@@ -159,11 +159,11 @@ public abstract class AbstractJdbcFlowTopologyRepository extends AbstractJdbcRep
     protected DMLQuery<Record> buildMergeStatement(DSLContext context, FlowTopology flowTopology) {
         return context.mergeInto(this.jdbcRepository.getTable())
             .using(context.selectOne())
-            .on(AbstractJdbcRepository.field("key").eq(this.jdbcRepository.key(flowTopology)))
+            .on(KEY_FIELD.eq(this.jdbcRepository.key(flowTopology)))
             .whenMatchedThenUpdate()
             .set(this.jdbcRepository.persistFields(flowTopology))
             .whenNotMatchedThenInsert()
-            .set(AbstractJdbcRepository.field("key"), this.jdbcRepository.key(flowTopology))
+            .set(KEY_FIELD, this.jdbcRepository.key(flowTopology))
             .set(this.jdbcRepository.persistFields(flowTopology));
     }
 

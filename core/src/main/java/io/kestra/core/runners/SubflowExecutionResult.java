@@ -1,5 +1,6 @@
 package io.kestra.core.runners;
 
+import io.kestra.core.models.HasUID;
 import io.kestra.core.models.executions.TaskRun;
 import io.kestra.core.models.flows.State;
 import io.kestra.core.queues.event.DispatchEvent;
@@ -9,7 +10,7 @@ import lombok.Data;
 
 @Data
 @Builder
-public class SubflowExecutionResult implements DispatchEvent {
+public class SubflowExecutionResult implements HasUID, DispatchEvent {
     @NotNull
     private TaskRun parentTaskRun;
 
@@ -21,6 +22,11 @@ public class SubflowExecutionResult implements DispatchEvent {
 
     @Override
     public String key() {
+        return executionId;
+    }
+
+    @Override
+    public String uid() {
         return executionId;
     }
 }

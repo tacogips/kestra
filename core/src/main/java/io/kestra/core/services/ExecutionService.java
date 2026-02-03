@@ -178,7 +178,7 @@ public class ExecutionService {
 
     public Execution restart(final Execution execution, Flow flow, @Nullable Integer revision, boolean emitEvent) throws Exception {
         if (!execution.getState().canBeRestarted()) {
-            throw new IllegalStateException("Execution must be terminated to be restarted, " +
+            throw new IllegalStateException("Execution must be terminated or paused and not killed to be restarted, " +
                 "current state is '" + execution.getState().getCurrent() + "' !"
             );
         }
@@ -295,7 +295,7 @@ public class ExecutionService {
             );
 
             // remove all child for replay task id
-            Set<String> taskRunToRemove = GraphUtils.successors(graphCluster, List.of(taskRunId))
+            Set<String> taskRunToRemove = GraphUtils.successors(graphCluster, Set.of(taskRunId))
                 .stream()
                 .filter(task -> task instanceof AbstractGraphTask)
                 .map(task -> ((AbstractGraphTask) task))
@@ -415,7 +415,7 @@ public class ExecutionService {
 
 
                 if (originalTaskRun.getAttempts() != null && !originalTaskRun.getAttempts().isEmpty()) {
-                    ArrayList<TaskRunAttempt> attempts = new ArrayList<>(originalTaskRun.getAttempts());
+                    List<TaskRunAttempt> attempts = new ArrayList<>(originalTaskRun.getAttempts());
                     attempts.set(attempts.size() - 1, attempts.getLast().withState(targetState));
                     newTaskRun = newTaskRun.withAttempts(attempts);
                 }
@@ -805,7 +805,7 @@ public class ExecutionService {
 
         GraphCluster graphCluster = GraphUtils.of(flow, execution);
 
-        return GraphUtils.successors(graphCluster, new ArrayList<>(workerTaskRunId))
+        return GraphUtils.successors(graphCluster, workerTaskRunId)
             .stream()
             .filter(task -> task instanceof AbstractGraphTask)
             .map(task -> (AbstractGraphTask) task)

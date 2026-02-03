@@ -17,9 +17,8 @@ import java.util.Date;
 public class PostgresTriggerRepository extends AbstractJdbcTriggerRepository {
     @Inject
     public PostgresTriggerRepository(@Named("triggers") PostgresRepository<TriggerState> repository,
-                                     QueueService queueService,
                                      JdbcFilterService filterService) {
-        super(repository, queueService, filterService);
+        super(repository, filterService);
     }
 
     @Override

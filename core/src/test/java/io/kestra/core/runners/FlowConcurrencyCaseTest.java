@@ -1,5 +1,6 @@
 package io.kestra.core.runners;
 
+import io.kestra.core.junit.annotations.LoadFlows;
 import io.kestra.core.models.executions.Execution;
 import io.kestra.core.models.executions.ExecutionKilled;
 import io.kestra.core.models.executions.ExecutionKilledExecution;
@@ -16,6 +17,7 @@ import io.kestra.core.queues.BroadcastQueueInterface;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import org.apache.commons.lang3.StringUtils;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -356,6 +358,30 @@ public class FlowConcurrencyCaseTest {
 
         // we manually reset the concurrency count to avoid messing with any other tests
         concurrencyLimitRepository.update(concurrencyLimit.withRunning(concurrencyLimit.getRunning() - 1));
+    }
+
+    void flowConcurrencyScheduled(String tenantId) throws QueueException {
+        Execution execution1 = runnerUtils.runOneUntilRunning(tenantId, NAMESPACE, "flow-concurrency-queue", null, null, Duration.ofSeconds(30));
+        assertThat(execution1.getState().isRunning()).isTrue();
+
+        Flow flow = flowRepository
+            .findById(tenantId, NAMESPACE, "flow-concurrency-queue", Optional.empty())
+            .orElseThrow();
+
+        Execution scheduledExecution = Execution.newExecution(flow, null, null, Optional.empty())
+            .withScheduleDate(java.time.Instant.now().plusSeconds(1));
+
+        Execution execution2 = runnerUtils.emitAndAwaitExecution(
+            e -> e.getState().getCurrent().equals(State.Type.QUEUED) || e.getState().getCurrent().equals(State.Type.RUNNING),
+            scheduledExecution,
+            Duration.ofSeconds(10)
+        );
+
+        assertThat(execution2.getState().getCurrent()).isEqualTo(State.Type.QUEUED);
+
+        // cleanup
+        runnerUtils.awaitExecution(e -> e.getState().getCurrent().equals(State.Type.SUCCESS), execution1);
+        runnerUtils.awaitExecution(e -> e.getState().getCurrent().equals(State.Type.SUCCESS), execution2);
     }
 
     private URI storageUpload(String tenantId) throws URISyntaxException, IOException {

@@ -98,7 +98,7 @@ public class ExecutionEventMessageHandler implements ExecutorMessageHandler<Exec
                         ExecutionDelay executionDelay = ExecutionDelay.builder()
                             .executionId(executor.getExecution().getId())
                             .date(execution.getScheduleDate())
-                            .state(State.Type.RUNNING)
+                            .state(State.Type.CREATED)
                             .delayType(ExecutionDelay.DelayType.RESUME_FLOW)
                             .build();
                         executionDelayStateStore.save(executionDelay);
@@ -285,10 +285,10 @@ public class ExecutionEventMessageHandler implements ExecutorMessageHandler<Exec
     private Execution fail(Execution message, Exception e) {
         var failedExecution = message.failedExecutionFromExecutor(e);
         try {
-            logQueue.emitAsync(failedExecution.getLogs());
+            logQueue.emitAsync(failedExecution.logs());
         } catch (QueueException ex) {
             // fail silently
         }
-        return failedExecution.getExecution().getState().isFailed() ? failedExecution.getExecution() :  failedExecution.getExecution().withState(State.Type.FAILED);
+        return failedExecution.execution().getState().isFailed() ? failedExecution.execution() :  failedExecution.execution().withState(State.Type.FAILED);
     }
 }

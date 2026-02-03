@@ -360,6 +360,45 @@ public abstract class AbstractTriggerRepositoryTest {
     }
 
     @Test
+    void should_find_exact_prefix_suffix() {
+        String tenant = TestsUtils.randomTenant(this.getClass().getSimpleName());
+        TriggerState trigger = trigger(tenant).flowId("some_search_trigger").build();
+        triggerStateStore.save(trigger);
+
+        // exact match
+        ArrayListTotal<TriggerState> entries = triggerRepository.find(
+            Pageable.UNPAGED,
+            tenant,
+            List.of(QueryFilter.builder().field(Field.QUERY).value("some_search_trigger").operation(Op.EQUALS).build())
+        );
+        assertThat(entries).hasSize(1);
+
+        // prefix match
+        entries = triggerRepository.find(
+            Pageable.UNPAGED,
+            tenant,
+            List.of(QueryFilter.builder().field(Field.QUERY).value("some_search").operation(Op.EQUALS).build())
+        );
+        assertThat(entries).hasSize(1);
+
+        // suffix match
+        entries = triggerRepository.find(
+            Pageable.UNPAGED,
+            tenant,
+            List.of(QueryFilter.builder().field(Field.QUERY).value("search_trigger").operation(Op.EQUALS).build())
+        );
+        assertThat(entries).hasSize(1);
+
+        // no match
+        entries = triggerRepository.find(
+            Pageable.UNPAGED,
+            tenant,
+            List.of(QueryFilter.builder().field(Field.QUERY).value("nothing").operation(Op.EQUALS).build())
+        );
+        assertThat(entries).hasSize(0);
+    }
+
+    @Test
     void shouldGetResultsForFindTriggersEligibleForSchedulingGivenNoExecutionDate() {
         // GIVEN
         String tenant1 = TestsUtils.randomTenant(this.getClass().getSimpleName());

@@ -40,7 +40,6 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
 
     private static final Field<Object> STATE = field("state");
     private static final Field<Object> TYPE = field("service_type");
-    private static final Field<Object> VALUE = field("value");
     private static final Field<Instant> UPDATED_AT = field("updated_at", Instant.class);
     private static final Field<Instant> CREATED_AT = field("created_at", Instant.class);
     private static final Field<Object> SERVICE_ID = field("service_id");
@@ -66,7 +65,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
                                               final boolean isForUpdate) {
 
         SelectConditionStep<Record1<Object>> query = dslContext
-            .select(VALUE)
+            .select(VALUE_FIELD)
             .from(table())
             .where(SERVICE_ID.eq(id));
 
@@ -83,7 +82,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
         return this.jdbcRepository.getDslContextWrapper()
             .transactionResult(configuration -> findAllInstancesInStates(configuration, states, false));
     }
-    
+
     /**
      * {@inheritDoc}
      **/
@@ -92,7 +91,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
         return this.jdbcRepository.getDslContextWrapper()
             .transactionResult(configuration -> {
                 var query = using(configuration)
-                    .select(VALUE)
+                    .select(VALUE_FIELD)
                     .from(table())
                     .where(STATE.eq(state.name()));
                 return this.jdbcRepository.fetch(query);
@@ -106,7 +105,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
     public List<ServiceInstance> findAllInstancesBetween(final ServiceType type, final Instant from, final Instant to) {
         return jdbcRepository.getDslContextWrapper().transactionResult(configuration -> {
             SelectConditionStep<Record1<Object>> query = using(configuration)
-                .select(VALUE)
+                .select(VALUE_FIELD)
                 .from(table())
                 .where(TYPE.eq(type.name()))
                 .and(CREATED_AT.lt(to))
@@ -120,7 +119,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
                                                           final Set<Service.ServiceState> states,
                                                           final boolean isForUpdate) {
         SelectConditionStep<Record1<Object>> query = using(configuration)
-            .select(VALUE)
+            .select(VALUE_FIELD)
             .from(table())
             .where(STATE.in(states.stream().map(Enum::name).toList()));
 
@@ -134,7 +133,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
         jdbcRepository.getDslContextWrapper().transaction(configuration -> {
             var dslContext = DSL.using(configuration);
             var query = dslContext
-                .select(VALUE)
+                .select(VALUE_FIELD)
                 .from(table())
                 .where(STATE.notIn(Service.ServiceState.CREATED.name(), Service.ServiceState.RUNNING.name()));
 
@@ -148,7 +147,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
         jdbcRepository.getDslContextWrapper().transaction(configuration -> {
             var dslContext = DSL.using(configuration);
             var query = dslContext
-                .select(VALUE)
+                .select(VALUE_FIELD)
                 .from(table())
                 .where(STATE.in(states.stream().map(Enum::name).toList()));
 
@@ -176,7 +175,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
     public List<ServiceInstance> findAllInstancesInNotRunningState(final Configuration configuration,
                                                                    final boolean isForUpdate) {
         SelectConditionStep<Record1<Object>> query = using(configuration)
-            .select(VALUE)
+            .select(VALUE_FIELD)
             .from(table())
             .where(STATE.eq(Service.ServiceState.NOT_RUNNING.name()));
 
@@ -184,7 +183,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
             this.jdbcRepository.fetch(query.forUpdate().skipLocked()) :
             this.jdbcRepository.fetch(query);
     }
-    
+
     @Override
     public int purgeEmptyInstances(Instant until) {
         return jdbcRepository.getDslContextWrapper().transactionResult(
@@ -224,7 +223,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
         return this.jdbcRepository
             .getDslContextWrapper()
             .transactionResult(configuration -> this.jdbcRepository.fetch(
-                using(configuration).select(VALUE).from(table()))
+                using(configuration).select(VALUE_FIELD).from(table()))
             );
     }
 
@@ -239,7 +238,7 @@ public abstract class AbstractJdbcServiceInstanceRepository extends AbstractJdbc
             .getDslContextWrapper()
             .transactionResult(configuration -> {
                 DSLContext context = using(configuration);
-                SelectConditionStep<Record1<Object>> select = context.select(VALUE).from(table()).where("1=1");
+                SelectConditionStep<Record1<Object>> select = context.select(VALUE_FIELD).from(table()).where("1=1");
                 if (states != null && !states.isEmpty()) {
                     List<String> stateStrings = states.stream().map(Enum::name).collect(toCollection(ArrayList::new));
                     // backward-compatibility: EMPTY was renamed to INACTIVE in Kestra 1.0

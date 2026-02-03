@@ -62,8 +62,8 @@ public class MiscController {
     @Inject
     KestraConfig kestraConfig;
 
-    @io.micronaut.context.annotation.Value("${kestra.ui.charts.default-duration:P30D}")
-private String chartDefaultDuration;
+    @io.micronaut.context.annotation.Value("${kestra.ui.charts.default-duration:PT24H}")
+    private String chartDefaultDuration;
 
     @io.micronaut.context.annotation.Value("${kestra.anonymous-usage-report.enabled}")
     protected Boolean isAnonymousUsageEnabled;

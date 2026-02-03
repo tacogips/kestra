@@ -38,7 +38,7 @@ public interface KvMetadataRepositoryInterface {
     PersistedKvMetadata save(PersistedKvMetadata item);
 
     default PersistedKvMetadata delete(PersistedKvMetadata persistedKvMetadata) throws IOException {
-        return this.save(persistedKvMetadata.toBuilder().deleted(true).build());
+        return this.save(persistedKvMetadata.toDeleted());
     }
 
     /**

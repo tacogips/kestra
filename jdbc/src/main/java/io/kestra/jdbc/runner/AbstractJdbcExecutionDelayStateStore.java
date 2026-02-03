@@ -16,7 +16,6 @@ public abstract class AbstractJdbcExecutionDelayStateStore extends AbstractJdbcR
     protected io.kestra.jdbc.AbstractJdbcRepository<ExecutionDelay> jdbcRepository;
 
     private static final Field<Object> DATE_FIELD = DSL.field(DSL.quotedName("date"));
-    private static final Field<Object> VALUE_FIELD = DSL.field(DSL.quotedName("value"));
 
     public AbstractJdbcExecutionDelayStateStore(io.kestra.jdbc.AbstractJdbcRepository<ExecutionDelay> jdbcRepository) {
         this.jdbcRepository = jdbcRepository;

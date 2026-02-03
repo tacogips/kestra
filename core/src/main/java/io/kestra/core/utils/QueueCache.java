@@ -1,8 +1,8 @@
 package io.kestra.core.utils;
 
 import com.google.common.annotations.VisibleForTesting;
-import io.kestra.core.models.DeletedInterface;
 import io.kestra.core.models.HasUID;
+import io.kestra.core.models.SoftDeletable;
 import io.kestra.core.queues.BroadcastQueueInterface;
 import io.kestra.core.queues.QueueSubscriber;
 import io.kestra.core.queues.event.BroadcastEvent;
@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @param <T> the item of the cache
  */
 @Slf4j
-public class QueueCache<T extends DeletedInterface & HasUID & BroadcastEvent> implements AutoCloseable {
+public class QueueCache<T extends SoftDeletable<T> & HasUID & BroadcastEvent> implements AutoCloseable {
     private final Map<String, T> cache;
     private final BroadcastQueueInterface<T> queue;
 

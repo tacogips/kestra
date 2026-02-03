@@ -97,4 +97,10 @@ public abstract class AbstractRunnerConcurrencyTest {
     void flowConcurrencyQueuedProtection() throws QueueException, InterruptedException {
         flowConcurrencyCaseTest.flowConcurrencyQueuedProtection("flow-concurrency-queued-protection");
     }
+
+    @Test
+    @LoadFlows(value = {"flows/valids/flow-concurrency-queue.yml"}, tenantId = "flow-concurrency-scheduled")
+    void flowConcurrencyScheduled() throws QueueException {
+        flowConcurrencyCaseTest.flowConcurrencyScheduled("flow-concurrency-scheduled");
+    }
 }

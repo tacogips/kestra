@@ -1,11 +1,14 @@
 package io.kestra.jdbc.runner;
 
+import io.kestra.core.models.executions.Execution;
 import io.kestra.core.models.flows.FlowInterface;
 import io.kestra.core.runners.ConcurrencyLimit;
+import io.kestra.core.runners.ExecutionQueuedStateStore;
 import io.kestra.core.runners.ExecutionRunning;
 import io.kestra.executor.ConcurrencyLimitStateStore;
 import io.kestra.core.runners.TransactionContext;
 import io.kestra.jdbc.repository.AbstractJdbcRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.tuple.Pair;
 import org.jooq.*;
 import org.jooq.exception.DataAccessException;
@@ -14,9 +17,13 @@ import org.jooq.impl.DSL;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 
+@Slf4j
 public class AbstractJdbcConcurrencyLimitStateStore extends AbstractJdbcRepository implements ConcurrencyLimitStateStore {
+    public static final Field<Object> NAMESPACE_FIELD = field("namespace");
+    public static final Field<Object> FLOW_ID_FIELD = field("flow_id");
     protected io.kestra.jdbc.AbstractJdbcRepository<ConcurrencyLimit> jdbcRepository;
 
     public AbstractJdbcConcurrencyLimitStateStore(io.kestra.jdbc.AbstractJdbcRepository<ConcurrencyLimit> jdbcRepository) {
@@ -52,7 +59,7 @@ public class AbstractJdbcConcurrencyLimitStateStore extends AbstractJdbcReposito
                         Map<Field<Object>, Object> finalFields = this.jdbcRepository.persistFields(zeroConcurrencyLimit);
                         var insert = dslContext
                             .insertInto(this.jdbcRepository.getTable())
-                            .set(field("key"), this.jdbcRepository.key(zeroConcurrencyLimit))
+                            .set(KEY_FIELD, this.jdbcRepository.key(zeroConcurrencyLimit))
                             .set(finalFields);
                         if (dslContext.configuration().dialect().supports(SQLDialect.POSTGRES)) {
                             insert.onDuplicateKeyIgnore().execute();
@@ -95,6 +102,43 @@ public class AbstractJdbcConcurrencyLimitStateStore extends AbstractJdbcReposito
             });
     }
 
+    @Override
+    public void decrementAndPop(FlowInterface flow, ExecutionQueuedStateStore executionQueuedStateStore,
+                                BiConsumer<TransactionContext, Execution> consumer) {
+        this.jdbcRepository
+            .getDslContextWrapper()
+            .transaction(configuration -> {
+                var dslContext = DSL.using(configuration);
+
+                // Decrement the counter
+                int newLimit = fetchOne(dslContext, flow).map(
+                    concurrencyLimit -> {
+                        int decremented = concurrencyLimit.getRunning() == 0 ? 0 : concurrencyLimit.getRunning() - 1;
+                        update(dslContext, concurrencyLimit.withRunning(decremented));
+                        return decremented;
+                    }
+                ).orElse(0);
+
+                // Only pop if we're below the limit
+                if (newLimit < flow.getConcurrency().getLimit()) {
+                    executionQueuedStateStore.pop(
+                        new JdbcTransactionContext(dslContext),
+                        flow.getTenantId(),
+                        flow.getNamespace(),
+                        flow.getId(),
+                        (ctx, queued) -> {
+                            // Increment the counter for the newly running execution
+                            increment(ctx, flow);
+                            // Call the consumer
+                            consumer.accept(ctx, queued);
+                        }
+                    );
+                } else {
+                    log.error("Concurrency limit reached for flow {}.{} after decrementing the execution running count. No new executions will be dequeued.", flow.getNamespace(), flow.getId());
+                }
+            });
+    }
+
     /**
      * Increment the concurrency limit counter.
      * Must only be called when a queued execution is popped, other use cases must pass thought the standard process of creating an execution.
@@ -116,7 +160,7 @@ public class AbstractJdbcConcurrencyLimitStateStore extends AbstractJdbcReposito
             .transactionResult(configuration -> {
                 var select = DSL
                     .using(configuration)
-                    .select(field("value"))
+                    .select(VALUE_FIELD)
                     .from(this.jdbcRepository.getTable())
                     .where(this.buildTenantCondition(tenantId));
 
@@ -140,8 +184,8 @@ public class AbstractJdbcConcurrencyLimitStateStore extends AbstractJdbcReposito
             .select()
             .from(this.jdbcRepository.getTable())
             .where(this.buildTenantCondition(flow.getTenantId()))
-            .and(field("namespace").eq(flow.getNamespace()))
-            .and(field("flow_id").eq(flow.getId()));
+            .and(NAMESPACE_FIELD.eq(flow.getNamespace()))
+            .and(FLOW_ID_FIELD.eq(flow.getId()));
 
         return this.jdbcRepository.fetchOne(select.forUpdate());
     }
@@ -157,11 +201,11 @@ public class AbstractJdbcConcurrencyLimitStateStore extends AbstractJdbcReposito
             .transactionResult(configuration -> {
                 var select = DSL
                     .using(configuration)
-                    .select(field("value"))
+                    .select(VALUE_FIELD)
                     .from(this.jdbcRepository.getTable())
                     .where(this.buildTenantCondition(tenantId))
-                    .and(field("namespace").eq(namespace))
-                    .and(field("flow_id").eq(flowId));
+                    .and(NAMESPACE_FIELD.eq(namespace))
+                    .and(FLOW_ID_FIELD.eq(flowId));
                 return this.jdbcRepository.fetchOne(select);
             });
     }

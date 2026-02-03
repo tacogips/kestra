@@ -1,8 +1,6 @@
 package io.kestra.core.runners;
 
-import io.kestra.core.models.executions.Execution;
 import io.kestra.core.models.flows.FlowInterface;
-import io.kestra.core.models.flows.FlowWithSource;
 import io.kestra.core.models.flows.State;
 import io.kestra.core.queues.DispatchQueueInterface;
 import io.kestra.core.queues.QueueException;
@@ -10,18 +8,12 @@ import io.kestra.core.queues.QueueFactoryInterface;
 import io.kestra.core.queues.QueueInterface;
 import io.kestra.core.utils.Await;
 import io.kestra.core.utils.TestsUtils;
-import io.micronaut.context.annotation.Replaces;
-import io.micronaut.test.annotation.MockBean;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
 import jakarta.inject.Singleton;
-import org.junit.jupiter.params.shadow.com.univocity.parsers.annotations.Replace;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
-import java.util.Collection;
-import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -248,7 +240,7 @@ public class DeserializationIssuesCaseTest {
         Await.until(
             () -> workerTaskResult.get() != null && workerTaskResult.get().getTaskRun().getState().isTerminated(),
             Duration.ofMillis(100),
-            Duration.ofMinutes(1)
+            Duration.ofSeconds(10)
         );
         receive.blockLast();
         assertThat(workerTaskResult.get().getTaskRun().getState().getHistories().size()).isEqualTo(2);
@@ -269,7 +261,7 @@ public class DeserializationIssuesCaseTest {
         Await.until(
             () -> workerTriggerResult.get() != null,
             Duration.ofMillis(100),
-            Duration.ofMinutes(1)
+            Duration.ofSeconds(10)
         );
         receive.blockLast();
     }
