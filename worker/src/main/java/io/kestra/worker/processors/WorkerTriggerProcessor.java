@@ -209,14 +209,12 @@ public class WorkerTriggerProcessor extends AbstractWorkerJobProcessor<WorkerTri
         }
 
         var flow = workerTrigger.getConditionContext().getFlow();
-        if (flow.getLabels() != null) {
-            evaluate = evaluate.map(execution -> {
-                    List<Label> executionLabels = execution.getLabels() != null ? execution.getLabels() : new ArrayList<>();
-                    executionLabels.addAll(LabelService.labelsExcludingSystem(flow));
-                    return execution.withLabels(executionLabels);
-                }
-            );
-        }
+        evaluate = evaluate.map(execution -> {
+                List<Label> executionLabels = execution.getLabels() != null ? execution.getLabels() : new ArrayList<>();
+                executionLabels.addAll(LabelService.labelsExcludingSystem(flow.getLabels()));
+                return execution.withLabels(executionLabels);
+            }
+        );
 
         this.workerTriggerResultQueue.put(WorkerTriggerResult.of(workerTrigger, evaluate.orElse(null)));
     }

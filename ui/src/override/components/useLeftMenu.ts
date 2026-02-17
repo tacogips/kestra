@@ -54,6 +54,8 @@ export type MenuItem = {
         locked?: boolean;
     };
     hidden?: boolean;
+    disabled?: boolean;
+    "class"?: string;
 };
 
 export function useLeftMenu() {
@@ -125,7 +127,10 @@ export function useLeftMenu() {
                 href: {
                     name: "home",
                     params: {
-                        dashboard: getDashboard($route, "id"),
+                        dashboard: getDashboard({
+                            ...$route,
+                            name: "home"
+                        }, "id"),
                     },
                 },
                 icon: {

@@ -17,7 +17,7 @@ import io.kestra.core.scheduler.events.TriggerReceived;
 import io.kestra.core.scheduler.model.TriggerState;
 import io.kestra.core.queues.KeyedDispatchQueueInterface;
 import io.kestra.core.runners.*;
-import io.kestra.core.services.SkipExecutionService;
+import io.kestra.core.services.IgnoreExecutionService;
 import io.kestra.core.services.WorkerGroupService;
 import io.kestra.core.tasks.test.SleepTrigger;
 import io.kestra.core.utils.IdUtils;
@@ -65,7 +65,7 @@ public abstract class AbstractServiceLivenessCoordinatorTest {
     private DefaultServiceLivenessCoordinator jdbcServiceLivenessHandler;
 
     @Inject
-    private SkipExecutionService skipExecutionService;
+    private IgnoreExecutionService ignoreExecutionService;
 
     @Inject
     private TriggerEventQueue triggerEventQueue;
@@ -152,7 +152,7 @@ public abstract class AbstractServiceLivenessCoordinatorTest {
         worker.start(1, null);
 
         WorkerTask workerTask = workerTask(Duration.ofSeconds(5));
-        skipExecutionService.setSkipExecutions(List.of(workerTask.getTaskRun().getExecutionId()));
+        ignoreExecutionService.setIgnoredExecutions(List.of(workerTask.getTaskRun().getExecutionId()));
 
         var taskResults = new ArrayList<WorkerTaskResult>();
         workerTaskResultQueue.addListener(item -> {
@@ -205,7 +205,7 @@ public abstract class AbstractServiceLivenessCoordinatorTest {
         Worker newWorker = applicationContext.createBean(Worker.class);
         newWorker.start(1, null);
         assertThat(receivedLatch.await(30, TimeUnit.SECONDS)).isTrue();
-        
+
         newWorker.close();
     }
 
@@ -215,16 +215,16 @@ public abstract class AbstractServiceLivenessCoordinatorTest {
         worker.start(1, null);
 
         WorkerTrigger workerTrigger = workerTrigger(Duration.ofSeconds(5), "workerGroupKey");
-        
+
         // we wait that the worker receives the trigger
         CountDownLatch receivedLatch = new CountDownLatch(1);
-        triggerEventQueue.subscribe(Set.of(VNodes.computeVNodeFromTrigger(workerTrigger.getTriggerContext(), 16)), 
+        triggerEventQueue.subscribe(Set.of(VNodes.computeVNodeFromTrigger(workerTrigger.getTriggerContext(), 16)),
             (vNode, events) -> events.forEach(event -> {
             if (event instanceof TriggerReceived) {
                 receivedLatch.countDown();
             }
         }));
-        
+
         workerJobEventQueue.emit("workerGroupKey", WorkerJobEvent.of(workerTrigger, "workerGroupKey"));
         assertTrue(receivedLatch.await(10, TimeUnit.SECONDS));
         worker.close();

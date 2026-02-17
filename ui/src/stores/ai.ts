@@ -1,17 +1,25 @@
 import axios from "axios";
 import {defineStore} from "pinia";
 import {apiUrl} from "override/utils/route";
+import {AiGenerationType} from "../utils/constants";
 
 export const useAiStore = defineStore("ai", {
     actions: {
-        async generateFlow({userPrompt, flowYaml, conversationId}: {userPrompt: string, flowYaml: string, conversationId: string}) {
-            const response = await axios.post(`${apiUrl()}/ai/generate/flow`, {
+        async fetchProviders() {
+            const response = await axios.get(`${apiUrl()}/ai/providers`);
+            return response.data ?? [];
+        },
+
+        async generate({userPrompt, yaml, conversationId, providerId, type}: {userPrompt: string, yaml: string, conversationId: string, providerId?: string, type: AiGenerationType}) {
+            const response = await axios.post(`${apiUrl()}/ai/generate/${type}`, {
                 userPrompt,
-                flowYaml,
-                conversationId
+                yaml,
+                conversationId,
+                providerId
             });
 
             return response.data;
         }
+
     }
 });

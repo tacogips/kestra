@@ -142,6 +142,11 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
         return findById(tenantId, id, false, false);
     }
 
+    @Override
+    public Execution findById(String id) {
+        return findOne(DSL.noCondition(), KEY_FIELD.eq(id)).orElse(null);
+    }
+
     public Optional<Execution> findById(String tenantId, String id, boolean allowDeleted, boolean withAccessControl) {
         Condition defaultFilter = withAccessControl ? this.defaultFilter(tenantId, allowDeleted) : this.defaultFilterWithNoACL(tenantId, allowDeleted);
         Condition condition = KEY_FIELD.eq(id);
@@ -155,7 +160,7 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
         return findCondition(query, Map.of());
     }
 
-    abstract protected Condition findLabelCondition(Either<Map<?, ?>, String> value, QueryFilter.Op operation);
+    abstract public Condition findLabelCondition(Either<Map<?, ?>, String> value, QueryFilter.Op operation);
 
     protected Condition statesFilter(List<State.Type> state) {
         return field("state_current")
@@ -916,11 +921,13 @@ public abstract class AbstractJdbcExecutionRepository extends AbstractJdbcCrudRe
                 Map<String, String> mergedMap = new HashMap<>();
 
                 labelFilters.forEach(labelFilter -> {
-                    Map<String, String> currentMap =
-                        labelFilter.getValue() instanceof String stringLabel ?
-                            Label.from(stringLabel)
-                            : (Map<String, String>) labelFilter.getValue();
-                    mergedMap.putAll(currentMap);
+                    if (labelFilter.getLabelKey() != null) {
+                        mergedMap.put(labelFilter.getLabelKey(), labelFilter.getValue().toString());
+                    } else if (labelFilter.getValue() instanceof String stringLabel) {
+                        mergedMap.putAll(Label.from(stringLabel));
+                    } else {
+                        mergedMap.putAll((Map<String, String>) labelFilter.getValue());
+                    }
                 });
 
                 selectConditionStep = selectConditionStep.and(findCondition(null, mergedMap));

@@ -47,12 +47,20 @@
     "after": "después",
     "aggregation": "Agregación",
     "ai": {
+      "dashboard": {
+        "prompt_placeholder": "Haz una pregunta sobre tus datos. Ejemplo de solicitud: Muéstrame la tasa de éxito de mis flows en los últimos 7 días."
+      },
       "flow": {
         "enable_instructions": {
           "footer": "Nota: En este momento, solo se admite Gemini como proveedor de AI para la Edición de Código Abierto. Para la Edición Empresarial, consulte la documentación de AI Copilot para la configuración de otros proveedores de modelos.\n\nReinicie su instancia de Kestra después de guardar la configuración.",
           "header": "<b>AI Copilot aún no ha sido configurado.</b>\n\nPara habilitar AI Copilot, añade el siguiente fragmento a tu archivo de configuración de la instancia de Kestra (por ejemplo, <code>application.yml</code>), reemplazando <code>geminiApiKey</code> con tu key real:"
         },
-        "generating": "Generando YAML de Flow para ti...",
+        "generating": {
+          "app": "Generando YAML de la aplicación para ti...",
+          "dashboard": "Generando Dashboard YAML para ti...",
+          "flow": "Generando YAML de Flow para ti...",
+          "test": "Generando YAML de prueba para ti..."
+        },
         "prompt_placeholder": "Ingrese instrucciones para crear su flow de Kestra. Ejemplo de solicitud: Crear un flow que se ejecute todos los lunes a las 9 AM.",
         "title": "Agente de IA"
       }
@@ -203,7 +211,6 @@
     "copy_to_clipboard": "Copiar al portapapeles",
     "create": "Crear",
     "create first task": "Crea tu primera task",
-    "create new revision": "Crear nueva revisión",
     "create_flow": "Crear Flow",
     "created date": "Fecha de creación",
     "creation": "Creación",
@@ -370,7 +377,7 @@
       },
       "secrets": {
         "add_env": {
-          "first": "Codifica el <strong><a href=\"https://kestra.io/docs/how-to-guides/secrets#using-secrets-in-kestra\" target=\"_blank\">valor secreto en Base64</a></strong>",
+          "first": "Codifica el <a href=\"https://kestra.io/docs/how-to-guides/secrets#using-secrets-in-kestra\" target=\"_blank\">valor secreto en Base64</a>",
           "intro": "Para crear un nuevo Secret:",
           "second": "Agrega una variable de entorno llamada '<strong>SECRET_{'{MY_SECRET_KEY}'}</strong>' con el valor anterior",
           "third": "Reinicia tu instancia de Kestra"
@@ -498,6 +505,10 @@
           "content": "Lea más sobre <a href=\"https://kestra.io/docs/ui/namespaces#dependencies\" target=\"_blank\">Namespace Dependencies</a> en nuestra documentación.",
           "title": "Actualmente no hay dependencias."
         }
+      },
+      "kill_switches": {
+        "content": "La función Kill Switch proporciona un mecanismo basado en la UI para detener ejecuciones problemáticas. Reemplaza los comandos de solo CLI <code>--skip-executions</code> y <code>--skip-flows</code> con una interfaz de administración integral.",
+        "title": "¡Aún no tienes Kill Switches!"
       },
       "panels": {
         "content": "Abre Flow Code o No-Code para comenzar a editar tus flows, o selecciona otro panel (Topology, Documentation, Files, Blueprints, Namespace Context) para funciones relacionadas.",
@@ -702,6 +713,10 @@
         "parent_description": "Mostrar solo ejecuciones de nivel superior/raíz"
       },
       "key": "Clave",
+      "kill_switch_type": {
+        "description": "Filtrar por tipo de kill switch",
+        "label": "Tipo"
+      },
       "kind": {
         "description": "Filtrar por tipo de ejecución",
         "label": "Tipo"
@@ -996,7 +1011,7 @@
     "fix_with_ai": "Solucionar con IA",
     "flow": "Flujo",
     "flow already exists": "Flow ya existe",
-    "flow already exists message": "El flow {id} ya existe en el namespace {namespace}. ¿Deseas crear una nueva revisión?",
+    "flow already exists message": "El flow <code>{id}</code> ya existe en el namespace <code>{namespace}</code>. ¿Desea crear una nueva revisión?",
     "flow creation": "Creación de flujo",
     "flow creation denied in namespace": "No tienes permiso para crear flows en el namespace `{namespace}`.",
     "flow delete": "¿Estás seguro de que quieres eliminar <code>{flowCount}</code> flow(s)?",

@@ -47,7 +47,6 @@ import java.io.IOException;
 import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 @Slf4j
 public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository implements FlowRepositoryInterface {
@@ -134,7 +133,7 @@ public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository 
                 var from = revision.map(integer -> context
                     .select(VALUE_FIELD, NAMESPACE_FIELD, TENANT_ID_FIELD)
                     .from(jdbcRepository.getTable())
-                    .where(this.revisionDefaultFilter(tenantId))
+                    .where(this.defaultFilter(tenantId, true))
                     .and(NAMESPACE_FIELD.eq(namespace))
                     .and(field("id", String.class).eq(id))
                     .and(REVISION_FIELD.eq(integer)
@@ -142,7 +141,7 @@ public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository 
                 ).orElseGet(() -> context
                     .select(VALUE_FIELD, NAMESPACE_FIELD, TENANT_ID_FIELD)
                     .from(fromLastRevision(true))
-                    .where(allowDeleted ? this.revisionDefaultFilter(tenantId) : this.defaultFilter(tenantId))
+                    .where(this.defaultFilter(tenantId, Boolean.TRUE.equals(allowDeleted)))
                     .and(NAMESPACE_FIELD.eq(namespace))
                     .and(field("id", String.class).eq(id))
                 );
@@ -162,14 +161,14 @@ public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository 
                     .map(integer -> context
                         .select(VALUE_FIELD, NAMESPACE_FIELD, TENANT_ID_FIELD)
                         .from(jdbcRepository.getTable())
-                        .where(this.noAclDefaultFilter(tenantId))
+                        .where(this.defaultFilterWithNoACL(tenantId, true))
                         .and(NAMESPACE_FIELD.eq(namespace))
                         .and(field("id", String.class).eq(id))
                         .and(REVISION_FIELD.eq(integer))
                     ).orElseGet(() -> context
                         .select(VALUE_FIELD, NAMESPACE_FIELD, TENANT_ID_FIELD)
                         .from(fromLastRevision(true))
-                        .where(this.noAclDefaultFilter(tenantId))
+                        .where(this.defaultFilterWithNoACL(tenantId, true))
                         .and(NAMESPACE_FIELD.eq(namespace))
                         .and(field("id", String.class).eq(id))
                     );
@@ -180,10 +179,6 @@ public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository 
 
     protected Table<Record> fromLastRevision(boolean asterisk) {
         return JdbcFlowRepositoryService.lastRevision(jdbcRepository, asterisk);
-    }
-
-    protected Condition revisionDefaultFilter(String tenantId) {
-        return buildTenantCondition(tenantId);
     }
 
     protected Condition noAclDefaultFilter(String tenantId) {
@@ -209,7 +204,7 @@ public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository 
                             TENANT_ID_FIELD
                         )
                         .from(jdbcRepository.getTable())
-                        .where(this.revisionDefaultFilter(tenantId))
+                        .where(this.defaultFilter(tenantId, true))
                         .and(NAMESPACE_FIELD.eq(namespace))
                         .and(field("id", String.class).eq(id))
                         .and(REVISION_FIELD.eq(integer)))
@@ -221,7 +216,7 @@ public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository 
                             TENANT_ID_FIELD
                         )
                         .from(fromLastRevision(true))
-                        .where(allowDeleted ? this.revisionDefaultFilter(tenantId) : this.defaultFilter(tenantId))
+                        .where(this.defaultFilter(tenantId, Boolean.TRUE.equals(allowDeleted)))
                         .and(NAMESPACE_FIELD.eq(namespace))
                         .and(field("id", String.class).eq(id)));
 
@@ -250,14 +245,14 @@ public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository 
                 var from = revision.map(integer -> context
                         .select(SOURCE_FIELD, VALUE_FIELD, NAMESPACE_FIELD, TENANT_ID_FIELD)
                         .from(jdbcRepository.getTable())
-                        .where(this.noAclDefaultFilter(tenantId))
+                        .where(this.defaultFilterWithNoACL(tenantId, true))
                         .and(NAMESPACE_FIELD.eq(namespace))
                         .and(field("id", String.class).eq(id))
                         .and(REVISION_FIELD.eq(integer)))
                     .orElseGet(() -> context
                         .select(SOURCE_FIELD, VALUE_FIELD, NAMESPACE_FIELD, TENANT_ID_FIELD)
                         .from(fromLastRevision(true))
-                        .where(this.noAclDefaultFilter(tenantId))
+                        .where(this.defaultFilterWithNoACL(tenantId, true))
                         .and(NAMESPACE_FIELD.eq(namespace))
                         .and(field("id", String.class).eq(id)));
                 Record4<String, Object, String, String> fetched = from.fetchAny();
@@ -285,7 +280,7 @@ public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository 
         return jdbcRepository
             .getDslContextWrapper()
             .transactionResult(configuration -> {
-                Condition tenantAndRevisionCondition = Boolean.TRUE.equals(allowDeleted) ? this.revisionDefaultFilter(tenantId) : this.defaultFilter(tenantId);
+                Condition tenantAndRevisionCondition = this.defaultFilter(tenantId, Boolean.TRUE.equals(allowDeleted));
                 if (!ListUtils.isEmpty(revisions)) {
                     tenantAndRevisionCondition = tenantAndRevisionCondition.and(REVISION_FIELD.in(revisions));
                 }
@@ -584,7 +579,7 @@ public abstract class AbstractJdbcFlowRepository extends AbstractJdbcRepository 
     abstract protected Condition findCondition(Object value, QueryFilter.Op operation);
 
     @Override
-    protected Condition findLabelCondition(Either<Map<?, ?>, String> value, QueryFilter.Op operation) {
+    public Condition findLabelCondition(Either<Map<?, ?>, String> value, QueryFilter.Op operation) {
         return findCondition(value.getLeft(), operation);
     }
 

@@ -17,7 +17,6 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.experimental.SuperBuilder;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang3.StringUtils;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
@@ -96,8 +95,6 @@ public class PurgeKV extends Task implements PurgeTask<KVEntry>, RunnableTask<Pu
     @Override
     public Output run(RunContext runContext) throws Exception {
         List<String> kvNamespaces = findNamespaces(runContext);
-        String renderedKeyPattern = runContext.render(keyPattern).as(String.class).orElse(null);
-        boolean keyFiltering = StringUtils.isNotBlank(renderedKeyPattern);
         runContext.logger().info("purging {} namespaces: {}", kvNamespaces.size(), kvNamespaces);
         AtomicLong count = new AtomicLong();
         KvPurgeBehavior renderedBehavior;

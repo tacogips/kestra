@@ -59,7 +59,7 @@ public abstract class AbstractRunnerTest {
     protected PauseTest.Suite pauseTest;
 
     @Inject
-    private SkipExecutionCaseTest skipExecutionCaseTest;
+    private IgnoreExecutionCaseTest ignoreExecutionCaseTest;
 
     @Inject
     protected ForEachItemCaseTest forEachItemCaseTest;
@@ -357,8 +357,20 @@ public abstract class AbstractRunnerTest {
 
     @Test
     @LoadFlows({"flows/valids/minimal.yaml"})
-    void skipExecution() throws Exception {
-        skipExecutionCaseTest.skipExecution();
+    void shouldIgnoreExecutionById() throws Exception {
+        ignoreExecutionCaseTest.shouldIgnoreExecutionById();
+    }
+
+    @Test
+    @LoadFlows({"flows/valids/minimal.yaml", "flows/valids/output-values.yml"})
+    void shouldIgnoreExecutionByFlowId() throws Exception {
+        ignoreExecutionCaseTest.shouldIgnoreExecutionByFlowId();
+    }
+
+    @Test
+    @LoadFlows({"flows/valids/minimal.yaml", "flows/valids/minimal2.yaml"})
+    void shouldIgnoreExecutionByNamespace() throws Exception {
+        ignoreExecutionCaseTest.shouldIgnoreExecutionByNamespace();
     }
 
     @Test

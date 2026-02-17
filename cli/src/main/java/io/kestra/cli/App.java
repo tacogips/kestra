@@ -14,6 +14,7 @@ import io.micronaut.context.ApplicationContextBuilder;
 import io.micronaut.core.annotation.Introspected;
 import org.slf4j.bridge.SLF4JBridgeHandler;
 import picocli.CommandLine;
+import picocli.CommandLine.Command;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -22,14 +23,12 @@ import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.stream.Stream;
 
-@CommandLine.Command(
+@Command(
     name = "kestra",
-
     versionProvider = VersionProvider.class,
     parameterListHeading = "%nParameters:%n",
     optionListHeading = "%nOptions:%n",
     commandListHeading = "%nCommands:%n",
-
     mixinStandardHelpOptions = true,
     subcommands = {
         PluginCommand.class,
@@ -43,6 +42,7 @@ import java.util.stream.Stream;
 )
 @Introspected
 public class App implements Callable<Integer> {
+
     public static void main(String[] args) {
         System.exit(runCli(args));
     }

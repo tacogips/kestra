@@ -37,10 +37,10 @@ public class KVStoreService {
 
     @Inject
     private NamespaceService namespaceService;
-    
+
     @Inject
     private StorageInterface storage;
-    
+
     @Inject
     private Optional<KvMetadataRepositoryInterface> kvMetadataRepository;
 
@@ -55,7 +55,7 @@ public class KVStoreService {
         checkAccessNamespaceIsAllowed(tenant, namespace, null);
         return new InternalKVStore(tenant, namespace, storageInterface, kvMetadataStateStore);
     }
-    
+
     /**
      * Gets access to the Key-Value store for the given namespace.
      *
@@ -68,7 +68,7 @@ public class KVStoreService {
         checkAccessNamespaceIsAllowed(tenant, namespace, fromNamespace);
         return new InternalKVStore(tenant, namespace, storageInterface, kvMetadataStateStore);
     }
-    
+
     public ArrayListTotal<KVEntry> list(Pageable pageable, String tenant, String namespace) throws IOException {
         return this.list(pageable, tenant, namespace, Collections.emptyList());
     }
@@ -132,8 +132,7 @@ public class KVStoreService {
         Integer purgedMetadataCount = getKvMetadataRepository().purge(kvEntries.stream().map(kv -> PersistedKvMetadata.from(tenant, kv)).toList());
 
         long actualDeletedEntries = kvEntries.stream()
-            .map(KVEntry::key)
-            .map(key -> KVStore.storageUri(key, namespace, 1))
+            .map(entry -> KVStore.storageUri(entry.key(), namespace, entry.version()))
             .map(throwFunction(uri -> {
                 boolean deleted = this.storage.delete(tenant, namespace, uri);
                 URI metadataURI = URI.create(uri.getPath() + ".metadata");
@@ -151,10 +150,10 @@ public class KVStoreService {
 
         return purgedMetadataCount;
     }
-    
+
     /**
      * Checks if access to the given namespace is allowed from the specified namespace and if the namespace exists.
-     * 
+     *
      * @param tenant        The tenant ID.
      * @param namespace     The namespace of the K/V store.
      * @param fromNamespace The namespace from which the K/V store is accessed.

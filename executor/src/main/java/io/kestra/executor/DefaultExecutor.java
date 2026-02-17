@@ -4,7 +4,10 @@ import io.kestra.core.contexts.KestraContext;
 import io.kestra.core.exceptions.DeserializationException;
 import io.kestra.core.exceptions.FlowNotFoundException;
 import io.kestra.core.executor.command.ExecutionCommand;
+import io.kestra.core.killswitch.EvaluationType;
+import io.kestra.core.killswitch.KillSwitchService;
 import io.kestra.core.metrics.MetricRegistry;
+import io.kestra.core.models.Label;
 import io.kestra.core.models.executions.*;
 import io.kestra.core.models.flows.*;
 import io.kestra.core.models.flows.sla.ExecutionMonitoringSLA;
@@ -53,6 +56,9 @@ import static io.kestra.core.utils.Rethrow.*;
 public class DefaultExecutor extends AbstractService implements Executor {
     private static final String UNABLE_TO_DESERIALIZE_AN_EXECUTION = "Unable to deserialize an execution: {}";
     private static final String SKIPPING_EXECUTION = "Skipping execution {}";
+    private static final String IGNORING_EXECUTION_MSG = "Ignoring execution {} because there is a kill switch on it";
+    private static final String CANCELLING_EXECUTION_MSG = "Cancelling execution {} because there is a kill switch on it";
+    private static final String KILLING_EXECUTION_MSG = "Killing execution {} because there is a kill switch on it";
 
     @Inject
     private DispatchQueueInterface<Execution> executionQueue;
@@ -73,7 +79,7 @@ public class DefaultExecutor extends AbstractService implements Executor {
     @Inject
     private DispatchQueueInterface<MultipleConditionEvent> multipleConditionEventQueue;
     @Inject
-    private SkipExecutionService skipExecutionService;
+    private KillSwitchService killSwitchService;
     @Inject
     private ExecutorService executorService;
     @Inject
@@ -304,8 +310,9 @@ public class DefaultExecutor extends AbstractService implements Executor {
             log.error("Unable to create execution {}", message.getId(), e);
         }
 
-        if (skipExecutionService.skipExecution(message)) {
-            log.warn(SKIPPING_EXECUTION, message.getId());
+        EvaluationType evaluationType = killSwitchService.evaluate(message);
+        if (evaluationType.isKillSwitched(message)) {
+            handleKillSwitchedExecution(evaluationType, message);
             return;
         }
 
@@ -321,9 +328,13 @@ public class DefaultExecutor extends AbstractService implements Executor {
         }
 
         ExecutionCommand message = either.getLeft();
-        if (skipExecutionService.skipExecution(message)) {
-            log.warn(SKIPPING_EXECUTION, message.executionId());
-            return;
+        EvaluationType evaluationType = killSwitchService.evaluate(message);
+        if (evaluationType != EvaluationType.PASS) {
+            var execution = executionStateStore.findById(message.executionId());
+            if (evaluationType.isKillSwitched(execution)) {
+                handleKillSwitchedExecution(evaluationType, execution);
+                return;
+            }
         }
 
         Optional<ExecutorContext> maybeExecutor = executionCommandMessageHandler.handle(message);
@@ -337,9 +348,13 @@ public class DefaultExecutor extends AbstractService implements Executor {
         }
 
         ExecutionEvent message = either.getLeft();
-        if (skipExecutionService.skipExecution(message)) {
-            log.warn(SKIPPING_EXECUTION, message.executionId());
-            return;
+        EvaluationType evaluationType = killSwitchService.evaluate(message);
+        if (evaluationType != EvaluationType.PASS) {
+            var execution = executionStateStore.findById(message.executionId());
+            if (evaluationType.isKillSwitched(execution)) {
+                handleKillSwitchedExecution(evaluationType, execution);
+                return;
+            }
         }
 
         Optional<ExecutorContext> maybeExecutor = executionEventMessageHandler.handle(message);
@@ -353,8 +368,9 @@ public class DefaultExecutor extends AbstractService implements Executor {
         }
 
         WorkerTaskResult message = either.getLeft();
-        if (skipExecutionService.skipExecution(message.getTaskRun())) {
-            log.warn(SKIPPING_EXECUTION, message.getTaskRun().getExecutionId());
+        EvaluationType evaluationType = killSwitchService.evaluate(message.getTaskRun());
+        if (evaluationType != EvaluationType.PASS) {
+            handleKillSwitchedWorkerTaskResult(evaluationType, message);
             return;
         }
 
@@ -380,8 +396,8 @@ public class DefaultExecutor extends AbstractService implements Executor {
             return;
         }
 
-        if (skipExecutionService.skipExecution(killedExecution.getExecutionId())) {
-            log.warn(SKIPPING_EXECUTION, killedExecution.getExecutionId());
+        if (killSwitchService.evaluate(killedExecution.getExecutionId()) == EvaluationType.IGNORE) { // we process other types of evaluation
+            log.warn(IGNORING_EXECUTION_MSG, killedExecution.getExecutionId());
             return;
         }
 
@@ -400,12 +416,14 @@ public class DefaultExecutor extends AbstractService implements Executor {
         }
 
         SubflowExecutionResult message = either.getLeft();
-        if (skipExecutionService.skipExecution(message.getExecutionId())) {
-            log.warn(SKIPPING_EXECUTION, message.getExecutionId());
+        // we filter all messages for which there is a kill switch as the kill switch will apply to the child execution anyway
+        if (killSwitchService.evaluate(message.getExecutionId()) != EvaluationType.PASS) {
+            log.warn("Ignoring subflow execution result for child execution {} as there is a kill switch in it", message.getExecutionId());
             return;
         }
-        if (skipExecutionService.skipExecution(message.getParentTaskRun())) {
-            log.warn(SKIPPING_EXECUTION, message.getParentTaskRun().getExecutionId());
+        // we filter all messages for which there is a kill switch as the kill switch will apply to the parent execution anyway
+        if (killSwitchService.evaluate(message.getParentTaskRun()) != EvaluationType.PASS) {
+            log.warn("Ignoring subflow execution result for parent execution {} as there is a kill switch in it", message.getParentTaskRun().getExecutionId());
             return;
         }
 
@@ -420,12 +438,14 @@ public class DefaultExecutor extends AbstractService implements Executor {
         }
 
         SubflowExecutionEnd message = either.getLeft();
-        if (skipExecutionService.skipExecution(message.parentExecutionId())) {
-            log.warn(SKIPPING_EXECUTION, message.parentExecutionId());
+        // we filter all messages for which there is a kill switch as the kill switch will apply to the child execution anyway
+        if (killSwitchService.evaluate(message.childExecution()) != EvaluationType.PASS) {
+            log.warn("Ignoring subflow execution end for child execution {} as there is a kill switch in it", message.childExecution().getId());
             return;
         }
-        if (skipExecutionService.skipExecution(message.childExecution())) {
-            log.warn(SKIPPING_EXECUTION, message.childExecution().getId());
+        // we filter all messages for which there is a kill switch as the kill switch will apply to the parent execution anyway
+        if (killSwitchService.evaluate(message.parentExecutionId()) != EvaluationType.PASS) {
+            log.warn("Ignoring subflow execution end for parent execution {} as there is a kill switch in it", message.parentExecutionId());
             return;
         }
 
@@ -441,6 +461,59 @@ public class DefaultExecutor extends AbstractService implements Executor {
         MultipleConditionEvent multipleConditionEvent = either.getLeft();
 
         multipleConditionEventMessageHandler.handle(multipleConditionEvent);
+    }
+
+    private void handleKillSwitchedExecution(EvaluationType evaluationType, Execution message) {
+        handleKillSwitchedExecution(evaluationType, message.getTenantId(), message.getId());
+    }
+
+    private void handleKillSwitchedWorkerTaskResult(EvaluationType evaluationType, WorkerTaskResult message) {
+        handleKillSwitchedExecution(evaluationType, message.getTaskRun().getTenantId(), message.getTaskRun().getExecutionId());
+    }
+
+    private void handleKillSwitchedExecution(EvaluationType evaluationType, String tenantId, String executionId) {
+        switch (evaluationType) {
+            case IGNORE -> log.warn(IGNORING_EXECUTION_MSG, executionId);
+            case KILL -> {
+                log.warn(KILLING_EXECUTION_MSG, executionId);
+                killExecution(tenantId, executionId);
+            }
+            case CANCEL -> {
+                log.warn(CANCELLING_EXECUTION_MSG, executionId);
+                cancelExecution(executionId);
+            }
+        }
+    }
+
+    private void killExecution(String tenantId, String executionId) {
+        executionStateStore.lock(executionId, execution -> {
+            if (!execution.getState().isTerminated()) {
+                var newExecution = execution.withState(State.Type.KILLING).addLabel(new Label(Label.KILL_SWITCH, "killed"));
+                return new ExecutorContext(newExecution);
+            }
+            return null;
+        });
+
+        try {
+            killQueue.emit(ExecutionKilledExecution.builder()
+                .tenantId(tenantId)
+                .executionId(executionId)
+                .isOnKillCascade(true)
+                .state(ExecutionKilled.State.REQUESTED)
+                .build());
+        } catch (QueueException e) {
+            log.error("Unable to kill the execution {}", executionId, e);
+        }
+    }
+
+    private void cancelExecution(String executionId) {
+        executionStateStore.lock(executionId, execution -> {
+            if (!execution.getState().isTerminated()) {
+                var newExecution = execution.withState(State.Type.CANCELLED).addLabel(new Label(Label.KILL_SWITCH, "cancelled"));
+                return new ExecutorContext(newExecution);
+            }
+            return null;
+        });
     }
 
     /**

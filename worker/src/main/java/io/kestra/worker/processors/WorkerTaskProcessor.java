@@ -15,14 +15,7 @@ import io.kestra.core.models.executions.Variables;
 import io.kestra.core.models.flows.State;
 import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.models.tasks.Task;
-import io.kestra.core.runners.DefaultRunContext;
-import io.kestra.core.runners.RunContext;
-import io.kestra.core.runners.RunContextInitializer;
-import io.kestra.core.runners.RunContextLogger;
-import io.kestra.core.runners.RunContextLoggerFactory;
-import io.kestra.core.runners.RunVariables;
-import io.kestra.core.runners.WorkerTask;
-import io.kestra.core.runners.WorkerTaskResult;
+import io.kestra.core.runners.*;
 import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.server.ServerConfig;
 import io.kestra.core.server.WorkerTaskRestartStrategy;
@@ -51,14 +44,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HexFormat;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -420,13 +409,18 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
                 // We need to have the task outputs injected before rendering the assets
                 Map<String, Object> formattedOutputsMap = RunVariables.executionFormattedOutputMap(taskRun);
 
-                List<Asset> outputAssets = runContext.assets().outputs();
+                List<AssetEmit> assetEmits = runContext.assets().emitted();
                 AssetsDeclaration assetsDeclaration = workerTask.getTask().getAssets();
 
-                outputAssets.addAll(runContext.render(assetsDeclaration.getOutputs()).asList(Asset.class, formattedOutputsMap));
                 taskRun = taskRun.withAssets(new AssetsInOut(
-                    runContext.render(assetsDeclaration.getInputs()).asList(AssetIdentifier.class, formattedOutputsMap),
-                    outputAssets
+                    Stream.concat(
+                        runContext.render(assetsDeclaration.getInputs()).asList(AssetIdentifier.class, formattedOutputsMap).stream(),
+                        assetEmits.stream().map(AssetEmit::inputs).flatMap(Collection::stream)
+                    ).toList(),
+                    Stream.concat(
+                        runContext.render(assetsDeclaration.getOutputs()).asList(Asset.class, formattedOutputsMap).stream(),
+                        assetEmits.stream().map(AssetEmit::outputs).flatMap(Collection::stream)
+                    ).toList()
                 ));
             }
         } catch (Exception e) {

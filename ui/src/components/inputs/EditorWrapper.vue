@@ -1,7 +1,7 @@
 <template>
     <div class="h-100 d-flex flex-column">
-        <img 
-            v-if="['jpg', 'jpeg', 'png', 'gif', 'webp', 'webm', 'avif'].includes(extension)" 
+        <img
+            v-if="['jpg', 'jpeg', 'png', 'gif', 'webp', 'webm', 'avif'].includes(extension)"
             :src="`${apiUrl()}/namespaces/${namespace}/files?path=/${path}`"
             class="image-preview"
         >
@@ -31,25 +31,29 @@
         >
             <template #absolute>
                 <AITriggerButton
+                    v-if="aiCopilotAllowed"
                     :show="flow"
                     :opened="aiCopilotOpened"
-                    @click="draftSource = undefined; aiCopilotOpened = true"
+                    @click="onAiCopilotButtonClick"
                 />
                 <ContentSave v-if="!flow" @click="saveFileContent" />
             </template>
             <template v-if="playgroundStore.enabled" #widget-content>
                 <PlaygroundRunTaskButton :taskId="highlightedLines?.taskId" />
             </template>
+            <template #buttons>
+                <AcceptDecline :visible="hasDraft" @accept="acceptDraft" @reject="declineDraft" />
+            </template>
         </Editor>
         <!-- Backdrop overlay -->
         <Transition name="backdrop-fade">
-            <div 
-                v-if="aiCopilotOpened" 
+            <div
+                v-if="aiCopilotOpened"
                 class="ai-copilot-backdrop"
                 @click="closeAiCopilot"
             />
         </Transition>
-        
+
         <!-- AI Copilot with enhanced animations -->
         <Transition name="copilot-slide">
             <AiCopilot
@@ -59,13 +63,9 @@
                 :flow="editorContent"
                 :conversationId="conversationId"
                 @generated-yaml="(yaml: string) => {draftSource = yaml; aiCopilotOpened = false}"
+                :generationType="aiGenerationTypes.FLOW"
             />
         </Transition>
-        <AcceptDecline
-            v-if="hasDraft"
-            @accept="acceptDraft"
-            @reject="declineDraft"
-        />
     </div>
 </template>
 
@@ -91,9 +91,12 @@
     import {EDITOR_CURSOR_INJECTION_KEY, EDITOR_WRAPPER_INJECTION_KEY} from "../no-code/injectionKeys";
     import {usePluginsStore} from "../../stores/plugins";
     import {useFlowStore} from "../../stores/flow";
+    import {useApiStore} from "../../stores/api";
+    import {useAuthStore} from "override/stores/auth"
     import {useNamespacesStore} from "override/stores/namespaces";
     import {useMiscStore} from "override/stores/misc";
     import useFlowEditorRunTaskButton from "../../composables/playground/useFlowEditorRunTaskButton";
+    import {aiGenerationTypes} from "../../utils/constants";
 
     import * as YAML_UTILS from "@kestra-io/ui-libs/flow-yaml-utils";
 
@@ -101,15 +104,18 @@
     import ContentSave from "vue-material-design-icons/ContentSave.vue";
     import AiCopilot from "../ai/AiCopilot.vue";
     import AITriggerButton from "../ai/AITriggerButton.vue";
-    import AcceptDecline from "./AcceptDecline.vue";
     import PlaygroundRunTaskButton from "./PlaygroundRunTaskButton.vue";
     import Utils from "../../utils/utils";
     import {FILES_CLOSE_TAB_INJECTION_KEY} from "./FileExplorer.vue";
+    import permission from "../../models/permission"
+    import action from "../../models/action"
+    import AcceptDecline from "./AcceptDecline.vue";
 
     const route = useRoute();
     const router = useRouter();
 
     const flowStore = useFlowStore();
+    const authStore = useAuthStore();
 
     const cursor = ref();
 
@@ -136,6 +142,10 @@
 
     const source = computed(() => props.flow ? flowStore.flowYaml : sourceNS.value);
     const savedSource = computed(() => props.flow ? flowStore.flowYamlOrigin : savedSourceNS.value);
+
+    const aiCopilotAllowed = computed(() => {
+        return authStore.user?.isAllowed(permission.AI_COPILOT, action.READ, namespace.value);
+    });
 
     async function loadFile() {
         if (props.dirty || props.flow) return;
@@ -239,14 +249,15 @@
     const isCreating = computed(() => flowStore.isCreating);
 
     const timeout = ref<any>(null);
-        
+
     const editorContent = computed(() => {
         return draftSource.value ?? source.value;
     });
-        
+
     const pluginsStore = usePluginsStore();
     const namespacesStore = useNamespacesStore();
     const miscStore = useMiscStore();
+    const apiStore = useApiStore();
     const hash = computed<number>(() => miscStore.configs?.pluginsHash ?? 0);
 
     const editorScrollKey = computed(() => {
@@ -303,7 +314,7 @@
         const cls = YAML_UTILS.getTypeAtPosition(source.value, event.position, pluginsStore.allTypes);
         const version = YAML_UTILS.getVersionAtPosition(source.value, event.position);
         pluginsStore.updateDocumentation({cls, version, hash: hash.value});
-    };
+    }
 
     const saveFlowYaml = async () => {
         clearTimeout(timeout.value);
@@ -356,7 +367,22 @@
 
     const conversationId = ref<string>(Utils.uid());
 
+    function trackAiCopilotAction(action: string) {
+        apiStore.posthogEvents({
+            type: "AI_COPILOT",
+            action,
+            ai_copilot_configured: miscStore.configs?.isAiEnabled === true,
+        });
+    }
+
+    function onAiCopilotButtonClick() {
+        trackAiCopilotAction("open_click");
+        draftSource.value = undefined;
+        aiCopilotOpened.value = true;
+    }
+
     function acceptDraft() {
+        trackAiCopilotAction("changes_apply");
         const accepted = draftSource.value;
         draftSource.value = undefined;
         conversationId.value = Utils.uid();
@@ -364,6 +390,7 @@
     }
 
     function declineDraft() {
+        trackAiCopilotAction("changes_reject");
         draftSource.value = undefined;
         aiCopilotOpened.value = true;
     }
