@@ -63,7 +63,7 @@ public class GrpcStubFactory {
 
     @Bean
     @Singleton
-    public NamespaceFileMetadataServiceBlockingStub namespaceFileMetadataServiceBlockingStub() {
-        return NamespaceFileMetadataServiceGrpc.newBlockingStub(grpcChannelManager.getDefaultChannel());
+    public NamespaceFileMetadataServiceBlockingStub namespaceFileMetadataServiceBlockingStub(GrpcChannelManager manager) {
+        return NamespaceFileMetadataServiceGrpc.newBlockingStub(manager.getDefaultChannel());
     }
 }
