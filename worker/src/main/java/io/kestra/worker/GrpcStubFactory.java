@@ -56,10 +56,7 @@ public class GrpcStubFactory {
     public ConnectControllerServiceBlockingStub connectControllerServiceBlockingStub(GrpcChannelManager manager) {
         ConnectControllerServiceBlockingStub stub = ConnectControllerServiceGrpc.newBlockingStub(manager.getDefaultChannel());
         // Only set wait-for-ready here; deadline is applied per-call to avoid a stale absolute timestamp on a singleton.
-        if (workerControllersConfiguration.waitForReady().enabled()) {
-            return stub.withWaitForReady();
-        }
-        return stub;
+        return withWaitForReady(stub, false);
     }
     
     @Bean
@@ -79,11 +76,14 @@ public class GrpcStubFactory {
     public NamespaceFileMetadataServiceBlockingStub namespaceFileMetadataServiceBlockingStub(GrpcChannelManager manager) {
         return NamespaceFileMetadataServiceGrpc.newBlockingStub(manager.getDefaultChannel());
     }
-    
-    public <S extends AbstractStub<S>> S withWaitForReady(S stub) {
+
+    public <S extends AbstractStub<S>> S withWaitForReady(S stub, boolean deadline) {
         if (workerControllersConfiguration.waitForReady().enabled()) {
-            Duration deadline = workerControllersConfiguration.waitForReady().deadline();
-            return stub.withWaitForReady().withDeadline(Deadline.after(deadline.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS));
+            stub = stub.withWaitForReady();
+            if (deadline) {
+                Duration duration = workerControllersConfiguration.waitForReady().deadline();
+                stub = stub.withDeadline(Deadline.after(duration.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS));
+            }
         }
         return stub;
     }
