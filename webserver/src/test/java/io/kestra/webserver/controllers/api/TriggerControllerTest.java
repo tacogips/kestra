@@ -31,6 +31,7 @@ import io.micronaut.http.client.annotation.Client;
 import io.micronaut.http.client.exceptions.HttpClientResponseException;
 import io.micronaut.reactor.http.client.ReactorHttpClient;
 import io.micronaut.test.annotation.MockBean;
+import io.micronaut.test.extensions.junit5.annotation.MicronautTest;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
@@ -307,14 +308,15 @@ class TriggerControllerTest {
         Flow flow1 = generateFlowWithTrigger(tenant, namespace);
         Flow flow2 = generateFlowWithTrigger(tenant, namespace);
 
-        jdbcFlowRepository.create(GenericFlow.of(flow1));
-        jdbcFlowRepository.create(GenericFlow.of(flow2));
-
         Trigger triggerDisabled = createTriggerFromFlow(flow1, true);
         Trigger triggerNotDisabled = createTriggerFromFlow(flow2, false);
 
         jdbcTriggerRepository.save(triggerDisabled);
         jdbcTriggerRepository.save(triggerNotDisabled);
+
+        jdbcFlowRepository.create(GenericFlow.of(flow1));
+        jdbcFlowRepository.create(GenericFlow.of(flow2));
+
 
         List<Trigger> triggers = List.of(triggerDisabled, triggerNotDisabled);
 
@@ -333,14 +335,15 @@ class TriggerControllerTest {
         Flow flow1 = generateFlowWithTrigger(tenant, namespace);
         Flow flow2 = generateFlowWithTrigger(tenant, namespace);
 
-        jdbcFlowRepository.create(GenericFlow.of(flow1));
-        jdbcFlowRepository.create(GenericFlow.of(flow2));
-
         Trigger triggerDisabled = createTriggerFromFlow(flow1, true);
         Trigger triggerNotDisabled = createTriggerFromFlow(flow2, false);
 
         jdbcTriggerRepository.save(triggerDisabled);
         jdbcTriggerRepository.save(triggerNotDisabled);
+
+        jdbcFlowRepository.create(GenericFlow.of(flow1));
+        jdbcFlowRepository.create(GenericFlow.of(flow2));
+
 
         BulkResponse bulkResponse = client.toBlocking().retrieve(HttpRequest.POST(
             TRIGGER_PATH.formatted(tenant) + "/set-disabled/by-query?namespace=%s&disabled=false".formatted(namespace), null), BulkResponse.class);
