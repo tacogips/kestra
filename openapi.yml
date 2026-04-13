@@ -6995,8 +6995,8 @@ components:
     LoopRun:
       type: object
       properties:
-        executionId:
-          type: string
+        parent:
+          $ref: "#/components/schemas/Execution"
         taskId:
           type: string
         taskRunId:
