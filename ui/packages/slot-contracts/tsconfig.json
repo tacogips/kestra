@@ -6,18 +6,16 @@
         "module": "preserve",
         "moduleResolution": "bundler",
         "resolveJsonModule": true,
+        "types": ["node"],
         "strict": true,
         "noUnusedLocals": true,
-        "composite": true,
         "declaration": true,
         "emitDeclarationOnly": true,
-        "outDir": "./node_modules/.tmp/types",
         "esModuleInterop": true,
         "isolatedModules": true,
         "verbatimModuleSyntax": true,
         "skipLibCheck": true,
-        "allowImportingTsExtensions": true,
-        "rootDir": "./src"
+        "allowImportingTsExtensions": true
     },
-    "include": ["src"]
+    "include": ["src", "tsdown.config.ts"]
 }

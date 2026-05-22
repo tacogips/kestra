@@ -45,7 +45,7 @@
     import type {RouterTab} from "@kestra-io/design-system"
     import {useRouteTabsStore} from "../stores/routeTabs"
 
-    interface Tab extends RouterTab {
+    export interface Tab extends RouterTab {
         locked?: boolean;
         props?: any;
     }
