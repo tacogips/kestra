@@ -60,6 +60,7 @@
     import {isPaginationEnabled, useChartGenerator} from "../composables/useDashboards"
     import {FilterObject} from "../../../utils/filters"
     import TableQuickFilter from "./TableQuickFilter.vue"
+    import {stateFilterForTab} from "./quickFilters"
     import Date from "./table/columns/Date.vue"
     import Duration from "./table/columns/Duration.vue"
     import Link from "./table/columns/Link.vue"
@@ -129,7 +130,7 @@
 
     const data = ref()
     const activeTab = ref("all")
-    const stateFilter = ref<FilterObject | null>(null)
+    const stateFilter = ref<FilterObject | null>(stateFilterForTab(props.chart, "all"))
     const pageNumber = ref(1)
     const pageSize = ref(25)
 
