@@ -175,8 +175,15 @@ workers by changing only `workerGroupId` and group subscriptions.
 ## Multi-Architecture Image
 
 The runtime executable is architecture-independent Java bytecode, but the base
-image must match the host CPU. Build and push a manifest list with both supported
-platforms:
+image must match the host CPU. The branch workflow
+`.github/workflows/oss-worker-routing-image.yml` publishes the image to:
+
+```text
+ghcr.io/tacogips/kestra:oss-worker-routing
+ghcr.io/tacogips/kestra:oss-worker-routing-<commit-sha>
+```
+
+Manual builds can push the same manifest list with both supported platforms:
 
 ```bash
 ./gradlew writeExecutableJar
@@ -186,7 +193,7 @@ chmod 755 docker/app/kestra
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --provenance=false \
-  -t tacogips/kestra:oss-worker-routing \
+  -t ghcr.io/tacogips/kestra:oss-worker-routing \
   --push \
   .
 ```
@@ -198,7 +205,7 @@ default GKE node pool architecture. For local validation without registry push:
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --provenance=false \
-  -t tacogips/kestra:oss-worker-routing \
+  -t ghcr.io/tacogips/kestra:oss-worker-routing \
   --output type=oci,dest=/tmp/kestra-oss-worker-routing-multiarch.oci \
   .
 ```
