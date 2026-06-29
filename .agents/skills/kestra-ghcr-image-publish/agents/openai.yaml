@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kestra GHCR Image Publish"
+  short_description: "Publish Kestra routing images to GHCR"
+  default_prompt: "Use $kestra-ghcr-image-publish to build, publish, and verify the OSS worker routing Kestra image in GHCR."
