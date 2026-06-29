@@ -19,6 +19,41 @@ Because routing happens before dispatch, non-target workers do not execute a
 skip/no-op task. There is no skip task run and no skip log to filter from the
 execution view.
 
+## Implementation Map
+
+The implementation deliberately reuses Kestra's existing worker queue model
+instead of introducing a second dispatch path:
+
+- `WorkerRoutingConfiguration` binds the static
+  `kestra.worker.routing` configuration.
+- `ConfiguredWorkerQueueMetaStore` exposes configured queue metadata to the
+  executor. It resolves `workerSelector.tags` to queue ids, applies tenant
+  filters, and treats explicitly subscribed queues as routable.
+- `ConfiguredWorkerQueueService` selects the effective `workerSelector` for a
+  task or trigger, resolves it to a queue, and returns the dispatch disposition
+  used by the existing executor path.
+- `GrpcWorkerConnectionService` sends the worker's configured
+  `workerGroupId` when the worker connects to the controller.
+- `GrpcConnectControllerService` normalizes the requested worker group id in
+  OSS and returns it to the worker. Enterprise-specific authentication and
+  repository-backed group resolution can still override this service.
+- `ConfiguredWorkerQueueResolver` maps the resolved worker group id to queue
+  subscriptions for the gRPC worker controller.
+
+The practical result is:
+
+```text
+Flow task workerSelector.tags
+  -> ConfiguredWorkerQueueService
+  -> Worker Queue id
+  -> keyed worker job dispatch
+  -> connected workers whose group subscribes to that queue
+```
+
+No controller-to-worker SSH or HTTP callback is involved. Workers connect
+outbound to the controller and backend, then consume the queues assigned to
+their resolved group.
+
 ## Configuration
 
 Controller-side services need the full routing table so the executor can map
@@ -125,6 +160,21 @@ Task-level `workerSelector` overrides the flow-level selector. Trigger-level
 `workerSelector` also overrides the flow-level selector. If no selector is
 present, the job uses the default worker queue.
 
+Routing resolution is intentionally deterministic:
+
+- tags are normalized to lowercase for matching;
+- `match: ALL` requires every requested tag to be present on the queue;
+- `match: ANY` requires at least one requested tag;
+- queues restricted by `tenants` are ignored for other tenants;
+- queues already subscribed by configured groups are preferred;
+- when multiple queues still match, the queue with fewer extra tags is chosen,
+  then the queue id is used as a stable tie breaker.
+
+If no queue matches, `fallback: IGNORE` routes to the default queue. Other
+fallbacks keep their normal meaning: `FAIL` fails routing, `CANCEL` cancels the
+job, and `WAIT` waits for the selected queue to become available when a queue is
+known but no matching worker is connected.
+
 ## Local And Staging
 
 Local and staging can still run as a single-node or GKE-only environment by
@@ -171,6 +221,32 @@ workers by changing only `workerGroupId` and group subscriptions.
   matching worker connection instead of being executed by a non-target worker.
 - This does not replace task runners. A routed worker can still use `Process`,
   `Docker`, `Kubernetes`, or another task runner for supported task types.
+- Runtime authorization is not added by this OSS layer. Deployments that allow
+  remote workers to connect must still protect controller gRPC, database, and
+  storage credentials at the network and secret-management layers.
+
+## Verification
+
+Run the focused tests that cover routing resolution and worker connection
+behavior:
+
+```bash
+./gradlew :core:test --tests "io.kestra.core.services.WorkerQueueServiceTest"
+./gradlew :worker-controller:test --tests "io.kestra.controller.grpc.services.ConfiguredWorkerQueueResolverTest"
+./gradlew :worker-controller:test --tests "io.kestra.controller.grpc.services.GrpcConnectControllerServiceTest"
+```
+
+For a live or integration environment, verify the following operational
+invariants:
+
+- workers log the expected resolved `workerGroup`;
+- controller-side worker queue metrics include the expected worker group and
+  worker queue labels;
+- a task with `workerSelector.tags` lands on the expected worker host;
+- a selected queue with no connected worker waits, fails, cancels, or falls
+  back according to the task's `fallback` policy;
+- the controller host can observe execution state and rerun tasks without
+  opening inbound access to private worker machines.
 
 ## Multi-Architecture Image
 
