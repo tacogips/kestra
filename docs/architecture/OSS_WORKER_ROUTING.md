@@ -175,12 +175,14 @@ workers by changing only `workerGroupId` and group subscriptions.
 ## Multi-Architecture Image
 
 The runtime executable is architecture-independent Java bytecode, but the base
-image must match the host CPU. The branch workflow
-`.github/workflows/oss-worker-routing-image.yml` publishes the image to:
+image must match the host CPU. The live playground deployment workflow checks
+out this branch, builds the executable, installs the GCS storage plugin, and
+publishes the routed image to Google Artifact Registry:
 
 ```text
-ghcr.io/tacogips/kestra:oss-worker-routing
-ghcr.io/tacogips/kestra:oss-worker-routing-<commit-sha>
+<region>-docker.pkg.dev/<project-id>/kestra-playground/kestra-oss-worker-routing:oss-worker-routing
+<region>-docker.pkg.dev/<project-id>/kestra-playground/kestra-oss-worker-routing:<playground-commit-sha>
+<region>-docker.pkg.dev/<project-id>/kestra-playground/kestra-oss-worker-routing:oss-worker-routing-<kestra-commit-sha>
 ```
 
 Manual builds can push the same manifest list with both supported platforms:
@@ -193,7 +195,7 @@ chmod 755 docker/app/kestra
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --provenance=false \
-  -t ghcr.io/tacogips/kestra:oss-worker-routing \
+  -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/kestra-playground/kestra-oss-worker-routing:oss-worker-routing" \
   --push \
   .
 ```
@@ -205,7 +207,7 @@ default GKE node pool architecture. For local validation without registry push:
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --provenance=false \
-  -t ghcr.io/tacogips/kestra:oss-worker-routing \
+  -t kestra-oss-worker-routing:local \
   --output type=oci,dest=/tmp/kestra-oss-worker-routing-multiarch.oci \
   .
 ```
