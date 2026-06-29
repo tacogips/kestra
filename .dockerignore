@@ -1,0 +1,15 @@
+*
+
+!Dockerfile
+!docker
+!docker/**
+!docker/app
+!docker/app/**
+!docker/app/confs
+!docker/app/confs/**
+!docker/app/plugins
+!docker/app/plugins/**
+!docker/app/secrets
+!docker/app/secrets/**
+!plugins
+!plugins/**

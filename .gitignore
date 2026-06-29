@@ -79,3 +79,4 @@ charts/kestra-starter/charts/
 
 # Local dev server data (embedded H2, namespace files, KV) — never commit
 cli/data/
+.direnv/
