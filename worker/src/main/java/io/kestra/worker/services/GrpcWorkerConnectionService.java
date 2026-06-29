@@ -16,6 +16,8 @@ import io.kestra.core.contexts.KestraContext;
 import io.kestra.core.encryption.EncryptionConfig;
 import io.kestra.core.reporter.UsageReportConfig;
 import io.kestra.core.serializers.JacksonMapper;
+import io.kestra.core.worker.WorkerGroups;
+import io.kestra.core.worker.WorkerRoutingConfiguration;
 
 import io.grpc.Deadline;
 import io.micronaut.core.annotation.Nullable;
@@ -41,16 +43,19 @@ public class GrpcWorkerConnectionService implements WorkerConnectionService {
     @Nullable
     private final WorkerReportableScheduler workerReportableScheduler;
     private final EncryptionConfig encryptionConfig;
+    private final WorkerRoutingConfiguration workerRoutingConfiguration;
 
     @Inject
     public GrpcWorkerConnectionService(ConnectControllerServiceBlockingStub connectControllerService,
         WorkerControllersConfiguration workerControllersConfiguration,
         @Nullable WorkerReportableScheduler workerReportableScheduler,
-        EncryptionConfig encryptionConfig) {
+        EncryptionConfig encryptionConfig,
+        WorkerRoutingConfiguration workerRoutingConfiguration) {
         this.connectControllerService = connectControllerService;
         this.workerControllersConfiguration = workerControllersConfiguration;
         this.workerReportableScheduler = workerReportableScheduler;
         this.encryptionConfig = encryptionConfig;
+        this.workerRoutingConfiguration = workerRoutingConfiguration;
     }
 
     /**
@@ -63,6 +68,7 @@ public class GrpcWorkerConnectionService implements WorkerConnectionService {
         ConnectRequest request = ConnectRequest.newBuilder()
             .setHeader(RequestOrResponseHeaderFactory.create(workerId))
             .setWorkerNumThreads(KestraContext.getContext().getWorkerMaxNumThreads().orElse(0))
+            .setRequestedWorkerGroupId(WorkerGroups.normalize(workerRoutingConfiguration.workerGroupId()))
             .build();
 
         try {
