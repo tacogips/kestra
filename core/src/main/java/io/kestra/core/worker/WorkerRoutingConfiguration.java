@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 import io.micronaut.context.annotation.ConfigurationProperties;
+import io.micronaut.core.annotation.Introspected;
 import io.micronaut.core.annotation.Nullable;
 import jakarta.validation.Valid;
 
@@ -13,6 +14,7 @@ import jakarta.validation.Valid;
  * This intentionally stays separate from repository-backed Worker Group management so
  * a fork can keep rebasing upstream while still enabling deterministic worker routing.
  */
+@Introspected
 @ConfigurationProperties("kestra.worker.routing")
 public record WorkerRoutingConfiguration(
     @Nullable String workerGroupId,
@@ -36,6 +38,7 @@ public record WorkerRoutingConfiguration(
      * Static worker group definition. A worker in this group subscribes to these
      * Worker Queues. Empty subscriptions are resolved by the controller adapter.
      */
+    @Introspected
     public record WorkerGroup(@Valid @Nullable List<QueueSubscription> queues) {
         public WorkerGroup {
             queues = queues == null ? List.of() : List.copyOf(queues);
@@ -45,6 +48,7 @@ public record WorkerRoutingConfiguration(
     /**
      * Static Worker Queue definition used by {@code workerSelector.tags}.
      */
+    @Introspected
     public record WorkerQueue(@Nullable List<String> tags, @Nullable List<String> tenants) {
         public WorkerQueue {
             tags = tags == null ? List.of() : List.copyOf(tags);
