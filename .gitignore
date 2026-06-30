@@ -48,6 +48,7 @@ ui-design-system/*.tsbuildinfo
 ### Docker
 /.env
 docker-compose*.overide.yml
+plugins/*.jar
 docker/app/plugins/*.jar
 docker/app/kestra
 docker/app/confs/*.yml
