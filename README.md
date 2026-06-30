@@ -255,6 +255,12 @@ sequenceDiagram
     Worker-->>Controller: job result
 ```
 
+Database impact in this fork:
+
+- No new database tables, columns, indexes, or migration scripts are required for OSS worker group routing.
+- Worker group and worker queue metadata is static and configuration-backed through `kestra.worker.routing`, not repository-backed.
+- Routed jobs keep using the existing `WorkerJobEvent` queue storage; the fork only changes the queue key chosen before dispatch.
+
 If routing is not configured, or a job has no `workerSelector.tags`, Kestra keeps the default OSS worker queue behavior. If a matching queue has no connected worker, the selector `fallback` decides whether to wait, fail, cancel, or ignore the route. See [OSS Worker Routing](docs/architecture/OSS_WORKER_ROUTING.md) for configuration examples and operational checks.
 
 ---
