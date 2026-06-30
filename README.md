@@ -51,6 +51,7 @@ Kestra is an open-source, event-driven orchestration platform for data, AI, and 
 - [🚀 Quick Start](#-quick-start)
 - [🧩 Plugin Ecosystem](#-plugin-ecosystem)
 - [📚 Key Concepts](#-key-concepts)
+- [🧭 OSS Worker Group Routing](#-oss-worker-group-routing)
 - [🎨 Build Workflows Visually](#-build-workflows-visually)
 - [🔧 Extensible and Developer-Friendly](#-extensible-and-developer-friendly)
 - [🌐 Join the Community](#-join-the-community)
@@ -198,6 +199,43 @@ Kestra's plugin ecosystem is continually expanding, allowing you to tailor the p
 - **Namespaces:** logical grouping of flows for organization and isolation.
 - **Triggers:** schedule or events that initiate the execution of flows.
 - **Inputs & Variables:** parameters and dynamic data passed into flows and tasks.
+
+---
+
+## 🧭 OSS Worker Group Routing
+
+This fork includes static, configuration-backed worker group routing for OSS deployments. Operators define worker groups and worker queues in `kestra.worker.routing`; workers connect outbound to the controller, advertise their configured `workerGroupId`, and the executor resolves `workerSelector.tags` to a queue before dispatching the job.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Worker as Worker process
+    participant Connect as ConnectController gRPC
+    participant Controller as WorkerController
+    participant Resolver as ConfiguredWorkerQueueResolver
+    participant Executor as Executor
+    participant QueueService as ConfiguredWorkerQueueService
+    participant MetaStore as ConfiguredWorkerQueueMetaStore
+    participant Queue as WorkerJobEvent queue
+
+    Worker->>Connect: connect(requestedWorkerGroupId)
+    Connect-->>Worker: resolved workerGroupId
+    Worker->>Controller: open worker job stream(workerGroupId, maxConcurrency)
+    Controller->>Resolver: resolve(workerGroupId)
+    Resolver-->>Controller: queue subscriptions
+    Controller-->>Worker: register stream for subscribed queues
+
+    Executor->>QueueService: resolveWorkerQueueForJob(flow, task or trigger)
+    QueueService->>MetaStore: resolveQueueIdsByTags(workerSelector.tags, tenant, match)
+    MetaStore-->>QueueService: ordered matching queue ids
+    QueueService-->>Executor: WorkerQueueRouting(queueId, disposition)
+    Executor->>Queue: emit(queueId, WorkerJobEvent)
+    Queue-->>Controller: keyed job available
+    Controller-->>Worker: dispatch job to subscribed worker
+    Worker-->>Controller: job result
+```
+
+If routing is not configured, or a job has no `workerSelector.tags`, Kestra keeps the default OSS worker queue behavior. If a matching queue has no connected worker, the selector `fallback` decides whether to wait, fail, cancel, or ignore the route. See [OSS Worker Routing](docs/architecture/OSS_WORKER_ROUTING.md) for configuration examples and operational checks.
 
 ---
 
