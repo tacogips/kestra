@@ -204,18 +204,38 @@ Kestra's plugin ecosystem is continually expanding, allowing you to tailor the p
 
 ## 🧭 OSS Worker Group Routing
 
-This fork includes static, configuration-backed worker group routing for OSS deployments. Operators define worker groups and worker queues in `kestra.worker.routing`; workers connect outbound to the controller, advertise their configured `workerGroupId`, and the executor resolves `workerSelector.tags` to a queue before dispatching the job.
+This fork includes static, configuration-backed worker group routing for OSS deployments. It keeps the upstream OSS worker dispatch path as the default, then adds a routing step only when operators define worker groups and worker queues in `kestra.worker.routing` and a job declares `workerSelector.tags`.
+
+Upstream OSS sequence, unchanged when routing is not configured:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Executor as Executor
+    participant Queue as WorkerJobEvent queue
+    participant Controller as WorkerController
+    participant Worker as Worker process
+
+    Worker->>Controller: open worker job stream(maxConcurrency)
+    Controller-->>Worker: register default OSS subscription
+    Executor->>Queue: emit(default queue, WorkerJobEvent)
+    Queue-->>Controller: job available
+    Controller-->>Worker: dispatch job
+    Worker-->>Controller: job result
+```
+
+Fork-added routing sequence, used only for configured `workerSelector.tags`:
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Worker as Worker process
-    participant Connect as ConnectController gRPC
+    participant Connect as Fork ConnectController gRPC
     participant Controller as WorkerController
-    participant Resolver as ConfiguredWorkerQueueResolver
+    participant Resolver as Fork ConfiguredWorkerQueueResolver
     participant Executor as Executor
-    participant QueueService as ConfiguredWorkerQueueService
-    participant MetaStore as ConfiguredWorkerQueueMetaStore
+    participant QueueService as Fork ConfiguredWorkerQueueService
+    participant MetaStore as Fork ConfiguredWorkerQueueMetaStore
     participant Queue as WorkerJobEvent queue
 
     Worker->>Connect: connect(requestedWorkerGroupId)
