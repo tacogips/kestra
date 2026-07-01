@@ -50,11 +50,13 @@ class WorkerQueueServiceTest {
     @Test
     void shouldRouteSystemTaskToSystemQueueWhenSystemTaskCarriesWorkerSelectorTags() throws NoMatchingWorkerQueueException {
         WorkerTask workerTask = WorkerTask.builder()
-            .task(PurgeLogs.builder()
-                .id("purge")
-                .type(PurgeLogs.class.getName())
-                .workerSelector(new WorkerSelector(List.of("docker"), null))
-                .build())
+            .task(
+                PurgeLogs.builder()
+                    .id("purge")
+                    .type(PurgeLogs.class.getName())
+                    .workerSelector(new WorkerSelector(List.of("docker"), null))
+                    .build()
+            )
             .taskRun(TaskRun.builder().build())
             .build();
 
@@ -79,9 +81,12 @@ class WorkerQueueServiceTest {
     void shouldDelegateToDoResolveWhenWorkerJobIsTrigger() throws NoMatchingWorkerQueueException {
         WorkerTrigger workerTrigger = WorkerTrigger.builder()
             .trigger(Schedule.builder().id("trigger").build())
-            .data(new WorkerTriggerData(
-                "tenant", "ns", "flow", null, null, null, null,
-                Collections.emptyMap(), null, null, Collections.emptyMap()))
+            .data(
+                new WorkerTriggerData(
+                    "tenant", "ns", "flow", null, null, null, null,
+                    Collections.emptyMap(), null, null, Collections.emptyMap()
+                )
+            )
             .build();
 
         // Triggers cannot be SystemTasks, so the short-circuit does not apply.
@@ -91,10 +96,12 @@ class WorkerQueueServiceTest {
     @Test
     void shouldRouteTaskSelectorToConfiguredWorkerQueue() throws NoMatchingWorkerQueueException {
         WorkerTask workerTask = WorkerTask.builder()
-            .task(Return.builder()
-                .id("return")
-                .workerSelector(new WorkerSelector(List.of("gpu"), null))
-                .build())
+            .task(
+                Return.builder()
+                    .id("return")
+                    .workerSelector(new WorkerSelector(List.of("gpu"), null))
+                    .build()
+            )
             .taskRun(TaskRun.builder().build())
             .build();
 
@@ -108,10 +115,12 @@ class WorkerQueueServiceTest {
     @Test
     void shouldIgnoreWorkerSelectorWhenStaticRoutingIsNotConfigured() throws NoMatchingWorkerQueueException {
         WorkerTask workerTask = WorkerTask.builder()
-            .task(Return.builder()
-                .id("return")
-                .workerSelector(new WorkerSelector(List.of("gpu"), null))
-                .build())
+            .task(
+                Return.builder()
+                    .id("return")
+                    .workerSelector(new WorkerSelector(List.of("gpu"), null))
+                    .build()
+            )
             .taskRun(TaskRun.builder().build())
             .build();
         WorkerRoutingConfiguration emptyConfig = new WorkerRoutingConfiguration(null, Map.of(), Map.of());
@@ -126,10 +135,12 @@ class WorkerQueueServiceTest {
     @Test
     void shouldRouteToConfiguredQueueWithoutExplicitGroup() throws NoMatchingWorkerQueueException {
         WorkerTask workerTask = WorkerTask.builder()
-            .task(Return.builder()
-                .id("return")
-                .workerSelector(new WorkerSelector(List.of("gpu"), null))
-                .build())
+            .task(
+                Return.builder()
+                    .id("return")
+                    .workerSelector(new WorkerSelector(List.of("gpu"), null))
+                    .build()
+            )
             .taskRun(TaskRun.builder().build())
             .build();
         WorkerRoutingConfiguration config = new WorkerRoutingConfiguration(
@@ -152,16 +163,21 @@ class WorkerQueueServiceTest {
     @Test
     void shouldApplyFallbackWhenQueueHasNoConfiguredSubscriber() throws NoMatchingWorkerQueueException {
         WorkerTask workerTask = WorkerTask.builder()
-            .task(Return.builder()
-                .id("return")
-                .workerSelector(new WorkerSelector(List.of("gpu"), WorkerQueueFallback.CANCEL))
-                .build())
+            .task(
+                Return.builder()
+                    .id("return")
+                    .workerSelector(new WorkerSelector(List.of("gpu"), WorkerQueueFallback.CANCEL))
+                    .build()
+            )
             .taskRun(TaskRun.builder().build())
             .build();
         WorkerRoutingConfiguration config = new WorkerRoutingConfiguration(
             null,
-            Map.of("other", new WorkerRoutingConfiguration.WorkerGroup(List.of(new QueueSubscription("other", QueueSubscription.NO_RESERVATION)))),
-            Map.of("gce-a", new WorkerRoutingConfiguration.WorkerQueue(List.of("gpu"), List.of()))
+            Map.of("other", new WorkerRoutingConfiguration.GroupQueueMapping(List.of(new QueueSubscription("other", QueueSubscription.NO_RESERVATION)))),
+            Map.of(
+                "gce-a", new WorkerRoutingConfiguration.WorkerQueue(List.of("gpu"), List.of()),
+                "other", new WorkerRoutingConfiguration.WorkerQueue(List.of("other"), List.of())
+            )
         );
         WorkerQueueService serviceWithNoSubscriber = new ConfiguredWorkerQueueService(
             new ConfiguredWorkerQueueMetaStore(config),
@@ -184,10 +200,12 @@ class WorkerQueueServiceTest {
             .workerSelector(new WorkerSelector(List.of("cpu"), null))
             .build();
         WorkerTask workerTask = WorkerTask.builder()
-            .task(Return.builder()
-                .id("return")
-                .workerSelector(new WorkerSelector(List.of("gpu"), null))
-                .build())
+            .task(
+                Return.builder()
+                    .id("return")
+                    .workerSelector(new WorkerSelector(List.of("gpu"), null))
+                    .build()
+            )
             .taskRun(TaskRun.builder().build())
             .build();
 
@@ -200,13 +218,18 @@ class WorkerQueueServiceTest {
     @Test
     void shouldRouteTriggerSelectorToConfiguredWorkerQueue() throws NoMatchingWorkerQueueException {
         WorkerTrigger workerTrigger = WorkerTrigger.builder()
-            .trigger(Schedule.builder()
-                .id("trigger")
-                .workerSelector(new WorkerSelector(List.of("batch"), WorkerSelectorMatch.ANY, null))
-                .build())
-            .data(new WorkerTriggerData(
-                "tenant", "ns", "flow", null, null, null, null,
-                Collections.emptyMap(), null, null, Collections.emptyMap()))
+            .trigger(
+                Schedule.builder()
+                    .id("trigger")
+                    .workerSelector(new WorkerSelector(List.of("batch"), WorkerSelectorMatch.ANY, null))
+                    .build()
+            )
+            .data(
+                new WorkerTriggerData(
+                    "tenant", "ns", "flow", null, null, null, null,
+                    Collections.emptyMap(), null, null, Collections.emptyMap()
+                )
+            )
             .build();
 
         Optional<WorkerQueueRouting> result = configuredService().resolveWorkerQueueForJob(buildFlow(), workerTrigger);
@@ -218,10 +241,12 @@ class WorkerQueueServiceTest {
     @Test
     void shouldRouteToDefaultWhenFallbackIgnoreHasNoMatch() throws NoMatchingWorkerQueueException {
         WorkerTask workerTask = WorkerTask.builder()
-            .task(Return.builder()
-                .id("return")
-                .workerSelector(new WorkerSelector(List.of("missing"), WorkerQueueFallback.IGNORE))
-                .build())
+            .task(
+                Return.builder()
+                    .id("return")
+                    .workerSelector(new WorkerSelector(List.of("missing"), WorkerQueueFallback.IGNORE))
+                    .build()
+            )
             .taskRun(TaskRun.builder().build())
             .build();
 
@@ -234,10 +259,12 @@ class WorkerQueueServiceTest {
     @Test
     void shouldFailWhenSelectorHasNoConfiguredQueueMatch() {
         WorkerTask workerTask = WorkerTask.builder()
-            .task(Return.builder()
-                .id("return")
-                .workerSelector(new WorkerSelector(List.of("missing"), null))
-                .build())
+            .task(
+                Return.builder()
+                    .id("return")
+                    .workerSelector(new WorkerSelector(List.of("missing"), null))
+                    .build()
+            )
             .taskRun(TaskRun.builder().build())
             .build();
 
@@ -263,8 +290,8 @@ class WorkerQueueServiceTest {
         return new WorkerRoutingConfiguration(
             null,
             Map.of(
-                "gce-a", new WorkerRoutingConfiguration.WorkerGroup(List.of(new QueueSubscription("gce-a", QueueSubscription.NO_RESERVATION))),
-                "gce-b", new WorkerRoutingConfiguration.WorkerGroup(List.of(new QueueSubscription("gce-b", QueueSubscription.NO_RESERVATION)))
+                "gce-a", new WorkerRoutingConfiguration.GroupQueueMapping(List.of(new QueueSubscription("gce-a", QueueSubscription.NO_RESERVATION))),
+                "gce-b", new WorkerRoutingConfiguration.GroupQueueMapping(List.of(new QueueSubscription("gce-b", QueueSubscription.NO_RESERVATION)))
             ),
             Map.of(
                 "gce-a", new WorkerRoutingConfiguration.WorkerQueue(List.of("gpu", "gce-a"), List.of()),

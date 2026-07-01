@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kestra Worker Group Research"
+  short_description: "Investigate Kestra worker group routing"
+  default_prompt: "Use $kestra-worker-group-research to investigate and explain this Kestra fork worker group routing behavior."

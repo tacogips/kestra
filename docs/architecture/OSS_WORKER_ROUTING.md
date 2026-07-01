@@ -64,7 +64,7 @@ queue subscriptions:
 kestra:
   worker:
     routing:
-      groups:
+      groupQueueMappings:
         gce-gpu:
           queues:
             - workerQueueId: gce-gpu
@@ -113,8 +113,8 @@ and `workerSelector` keeps the upstream OSS behavior. This prevents an ordinary
 OSS deployment from changing behavior just because the forked classes are on the
 classpath.
 
-For a compact deployment, an explicit group block is optional. If a worker
-requests a group id that has the same name as a configured queue id, the
+For a compact deployment, an explicit `groupQueueMappings` block is optional. If
+a worker requests a group id that has the same name as a configured queue id, the
 controller subscribes that worker to the same-named queue:
 
 ```yaml
@@ -126,6 +126,11 @@ kestra:
         gce-gpu:
           tags: [gce, gpu]
 ```
+
+Every `workerQueueId` referenced from `groupQueueMappings.*.queues` must either
+be a configured entry under `queues` or one of the reserved queues (`default` or
+`system`). Kestra fails configuration loading when a mapping points at an
+undefined Worker Queue.
 
 ## Flow Usage
 
@@ -189,7 +194,7 @@ kestra:
   worker:
     routing:
       workerGroupId: local-all
-      groups:
+      groupQueueMappings:
         local-all:
           queues:
             - workerQueueId: gce-gpu

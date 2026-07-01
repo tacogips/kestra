@@ -15,11 +15,13 @@ class ConfiguredWorkerQueueResolverTest {
 
     @Test
     void shouldResolveConfiguredGroupSubscriptions() {
-        ConfiguredWorkerQueueResolver resolver = new ConfiguredWorkerQueueResolver(new WorkerRoutingConfiguration(
-            null,
-            Map.of("gce-a", new WorkerRoutingConfiguration.WorkerGroup(List.of(new QueueSubscription("gpu", 50)))),
-            Map.of()
-        ));
+        ConfiguredWorkerQueueResolver resolver = new ConfiguredWorkerQueueResolver(
+            new WorkerRoutingConfiguration(
+                null,
+                Map.of("gce-a", new WorkerRoutingConfiguration.GroupQueueMapping(List.of(new QueueSubscription("gpu", 50)))),
+                Map.of("gpu", new WorkerRoutingConfiguration.WorkerQueue(List.of("gpu"), List.of()))
+            )
+        );
 
         List<QueueSubscription> result = resolver.resolve("gce-a");
 
@@ -28,11 +30,13 @@ class ConfiguredWorkerQueueResolverTest {
 
     @Test
     void shouldResolveGroupToSameNamedQueueWhenOnlyQueueIsConfigured() {
-        ConfiguredWorkerQueueResolver resolver = new ConfiguredWorkerQueueResolver(new WorkerRoutingConfiguration(
-            null,
-            Map.of(),
-            Map.of("gce-a", new WorkerRoutingConfiguration.WorkerQueue(List.of("gpu"), List.of()))
-        ));
+        ConfiguredWorkerQueueResolver resolver = new ConfiguredWorkerQueueResolver(
+            new WorkerRoutingConfiguration(
+                null,
+                Map.of(),
+                Map.of("gce-a", new WorkerRoutingConfiguration.WorkerQueue(List.of("gpu"), List.of()))
+            )
+        );
 
         List<QueueSubscription> result = resolver.resolve("gce-a");
 

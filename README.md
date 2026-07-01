@@ -255,6 +255,142 @@ sequenceDiagram
     Worker-->>Controller: job result
 ```
 
+### Worker groups, Worker Queues, and worker configuration
+
+In this fork, Worker Groups and Worker Queues are separate concepts:
+
+- `workerGroupId` identifies which Worker Group a worker process belongs to.
+- `groupQueueMappings` maps each Worker Group to the Worker Queues it subscribes
+  to.
+- `queues` defines each Worker Queue and the tags used to select it from
+  `workerSelector.tags`.
+
+A Worker Group is therefore not itself the dispatch queue. It is the worker-side
+subscription group. A Worker Queue is the actual dispatch key used when the
+executor emits a `WorkerJobEvent`.
+
+The routing relationship is:
+
+```text
+worker process
+  -> workerGroupId
+  -> groupQueueMappings[workerGroupId].queues
+  -> subscribed Worker Queue ids
+
+task / trigger / flow
+  -> workerSelector.tags
+  -> queues.*.tags
+  -> matching Worker Queue id
+  -> workers subscribed to that queue
+```
+
+Each worker process only needs to declare its own Worker Group id:
+
+```yaml
+kestra:
+  worker:
+    routing:
+      workerGroupId: gce-gpu
+```
+
+The worker group is chosen from that configuration value. It is not inferred from
+host names, CPU or GPU devices, Kubernetes node labels, or any other runtime
+property. If `workerGroupId` is absent or empty, it is normalized to the default
+worker group.
+
+Controller-side services need the full routing table:
+
+```yaml
+kestra:
+  worker:
+    routing:
+      groupQueueMappings:
+        gce-gpu:
+          queues:
+            - workerQueueId: gpu-jobs
+              reservedPercent: -1
+        gce-cpu:
+          queues:
+            - workerQueueId: cpu-jobs
+              reservedPercent: -1
+      queues:
+        gpu-jobs:
+          tags: [gce, gpu]
+        cpu-jobs:
+          tags: [gce, cpu]
+```
+
+This configuration means:
+
+```text
+gce-gpu workers subscribe to gpu-jobs
+gce-cpu workers subscribe to cpu-jobs
+gpu-jobs is selected by workerSelector tags matching [gce, gpu]
+cpu-jobs is selected by workerSelector tags matching [gce, cpu]
+```
+
+A task, trigger, or flow selects a Worker Queue by tags, not by Worker Group name:
+
+```yaml
+workerSelector:
+  tags: [gpu]
+  match: ALL
+  fallback: WAIT
+```
+
+With the configuration above, `[gpu]` matches the `gpu-jobs` Worker Queue, and
+jobs emitted to `gpu-jobs` are dispatched only to workers in groups subscribed to
+that queue, such as `gce-gpu`.
+
+Worker Groups and Worker Queues do not need to be one-to-one. For example, a
+local deployment can run one Worker Group that subscribes to every routed queue:
+
+```yaml
+kestra:
+  worker:
+    routing:
+      workerGroupId: local-all
+      groupQueueMappings:
+        local-all:
+          queues:
+            - workerQueueId: gpu-jobs
+              reservedPercent: -1
+            - workerQueueId: cpu-jobs
+              reservedPercent: -1
+      queues:
+        gpu-jobs:
+          tags: [gce, gpu]
+        cpu-jobs:
+          tags: [gce, cpu]
+```
+
+For compact deployments, the explicit `groupQueueMappings` block is optional
+when the `workerGroupId` has the same name as a configured Worker Queue. In that
+case, the controller subscribes the worker to the same-named queue.
+
+Every `workerQueueId` referenced from `groupQueueMappings.*.queues` must either
+be a configured entry under `queues` or one of the reserved queues (`default` or
+`system`). Kestra fails configuration loading when a mapping points at an
+undefined Worker Queue.
+
+Invalid example:
+
+```yaml
+kestra:
+  worker:
+    routing:
+      groupQueueMappings:
+        gce-gpu:
+          queues:
+            - workerQueueId: not-exists-queue
+      queues:
+        gpu-jobs:
+          tags: [gpu]
+```
+
+This is rejected because `not-exists-queue` is subscribed by a Worker Group but
+is not defined under `queues`.
+
 Database impact in this fork:
 
 - No new database tables, columns, indexes, or migration scripts are required for OSS worker group routing.

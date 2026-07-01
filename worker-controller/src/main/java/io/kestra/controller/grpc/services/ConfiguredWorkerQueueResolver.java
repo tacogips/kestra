@@ -23,7 +23,7 @@ public class ConfiguredWorkerQueueResolver implements WorkerQueueResolver {
     @Override
     public List<QueueSubscription> resolve(String workerGroupId) {
         String groupId = WorkerGroups.normalize(workerGroupId);
-        WorkerRoutingConfiguration.WorkerGroup group = configuration.groups().get(groupId);
+        WorkerRoutingConfiguration.GroupQueueMapping group = configuration.groupQueueMappings().get(groupId);
         if (group != null && !group.queues().isEmpty()) {
             return group.queues();
         }
