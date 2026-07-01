@@ -15,10 +15,15 @@ Use this skill inside the `tacogips/kestra` checkout when answering questions or
    - Read the repository `AGENTS.md`; read `ui/AGENTS.md` only for UI changes.
 
 2. Identify the relevant tacogips commits when the question is historical.
+   - Fork baseline branch: `main-freeze-before-fork`.
+   - Baseline commit: `3d311d0668425647d2698f72f4a1828ec3e9c6e9`, the first parent of `d0e988d3f Merge feature/oss-worker-routing into main`.
+   - Treat `main-freeze-before-fork..main` as the fork-added surface when doing broad fork analysis.
    - Primary feature commit: `f64927b52 feat(worker): add static OSS worker routing`.
    - Important follow-up commits: `7cc6925f9`, `b1661a49b`, `527a2078f`, `98b507806`, `8b621158c`, `3d6563d3a`.
    - Use:
      ```bash
+     git diff --stat main-freeze-before-fork..main
+     git diff --name-status main-freeze-before-fork..main
      git log --all --author='tacogips' --grep='worker\|routing\|group\|queue' --regexp-ignore-case --date=short --pretty=format:'%h %ad %an <%ae> %s'
      git show --stat --oneline f64927b52
      ```

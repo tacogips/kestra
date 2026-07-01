@@ -2,6 +2,20 @@
 
 ## Commit Lineage
 
+Use `main-freeze-before-fork` as the stable pre-fork baseline branch. It points
+at `3d311d0668425647d2698f72f4a1828ec3e9c6e9`, the first parent of
+`d0e988d3f Merge feature/oss-worker-routing into main`. For fork analysis,
+treat `main-freeze-before-fork..main` as the diff containing tacogips fork
+changes.
+
+Useful broad fork-analysis commands:
+
+```bash
+git diff --stat main-freeze-before-fork..main
+git diff --name-status main-freeze-before-fork..main
+git log --oneline --decorate main-freeze-before-fork..main
+```
+
 Use these commits to understand what tacogips added on `main`:
 
 - `f64927b52 feat(worker): add static OSS worker routing`
