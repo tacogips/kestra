@@ -2,6 +2,8 @@ package io.kestra.core.worker;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import io.micronaut.context.annotation.ConfigurationProperties;
 import io.micronaut.core.annotation.Introspected;
@@ -18,13 +20,13 @@ import jakarta.validation.Valid;
 @ConfigurationProperties("kestra.worker.routing")
 public record WorkerRoutingConfiguration(
     @Nullable String workerGroupId,
-    @Valid @Nullable Map<String, WorkerGroup> groups,
-    @Valid @Nullable Map<String, WorkerQueue> queues
-) {
+    @Valid @Nullable Map<String, GroupQueueMapping> groupQueueMappings,
+    @Valid @Nullable Map<String, WorkerQueue> queues) {
 
     public WorkerRoutingConfiguration {
-        groups = groups == null ? Map.of() : Map.copyOf(groups);
+        groupQueueMappings = groupQueueMappings == null ? Map.of() : Map.copyOf(groupQueueMappings);
         queues = queues == null ? Map.of() : Map.copyOf(queues);
+        validateGroupQueueMappings(groupQueueMappings, queues);
     }
 
     /**
@@ -34,13 +36,40 @@ public record WorkerRoutingConfiguration(
         return !queues.isEmpty();
     }
 
+    private static void validateGroupQueueMappings(Map<String, GroupQueueMapping> groupQueueMappings, Map<String, WorkerQueue> queues) {
+        Set<String> configuredQueueIds = queues.keySet().stream()
+            .map(WorkerQueues::normalize)
+            .collect(Collectors.toUnmodifiableSet());
+
+        List<String> unknownQueueReferences = groupQueueMappings.entrySet().stream()
+            .flatMap(
+                entry -> entry.getValue().queues().stream()
+                    .map(QueueSubscription::workerQueueId)
+                    .map(WorkerQueues::normalize)
+                    .filter(queueId -> !isReservedQueue(queueId))
+                    .filter(queueId -> !configuredQueueIds.contains(queueId))
+                    .map(queueId -> entry.getKey() + " -> " + queueId)
+            )
+            .toList();
+
+        if (!unknownQueueReferences.isEmpty()) {
+            throw new IllegalArgumentException(
+                "kestra.worker.routing.groupQueueMappings references undefined worker queues: " + unknownQueueReferences
+            );
+        }
+    }
+
+    private static boolean isReservedQueue(String queueId) {
+        return WorkerQueues.DEFAULT_ID.equals(queueId) || WorkerQueues.SYSTEM_ID.equals(queueId);
+    }
+
     /**
-     * Static worker group definition. A worker in this group subscribes to these
-     * Worker Queues. Empty subscriptions are resolved by the controller adapter.
+     * Static mapping from a Worker Group id to the Worker Queues subscribed by
+     * workers in that group.
      */
     @Introspected
-    public record WorkerGroup(@Valid @Nullable List<QueueSubscription> queues) {
-        public WorkerGroup {
+    public record GroupQueueMapping(@Valid @Nullable List<QueueSubscription> queues) {
+        public GroupQueueMapping {
             queues = queues == null ? List.of() : List.copyOf(queues);
         }
     }

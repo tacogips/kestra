@@ -35,7 +35,7 @@ public class ConfiguredWorkerQueueMetaStore implements WorkerQueueMetaStore {
         if (WorkerQueues.DEFAULT_ID.equals(queueId) || WorkerQueues.SYSTEM_ID.equals(queueId)) {
             return true;
         }
-        if (configuration.groups().isEmpty()) {
+        if (configuration.groupQueueMappings().isEmpty()) {
             return configuration.queues().containsKey(queueId);
         }
         return subscribedQueueIds().contains(queueId);
@@ -62,21 +62,22 @@ public class ConfiguredWorkerQueueMetaStore implements WorkerQueueMetaStore {
         return configuration.queues().entrySet().stream()
             .filter(entry -> tenantAllowed(entry.getValue(), tenant))
             .filter(entry -> tagsMatch(required, normalizeTags(entry.getValue().tags()), effectiveMatch))
-            .sorted(Comparator
-                .<Map.Entry<String, WorkerRoutingConfiguration.WorkerQueue>>comparingInt(entry -> subscribed.contains(entry.getKey()) ? 0 : 1)
-                .thenComparingInt(entry -> extraTagCount(required, normalizeTags(entry.getValue().tags())))
-                .thenComparing(Map.Entry::getKey))
+            .sorted(
+                Comparator.<Map.Entry<String, WorkerRoutingConfiguration.WorkerQueue>> comparingInt(entry -> subscribed.contains(entry.getKey()) ? 0 : 1)
+                    .thenComparingInt(entry -> extraTagCount(required, normalizeTags(entry.getValue().tags())))
+                    .thenComparing(Map.Entry::getKey)
+            )
             .map(Map.Entry::getKey)
             .toList();
     }
 
     private Set<String> subscribedQueueIds() {
-        if (configuration.groups().isEmpty()) {
+        if (configuration.groupQueueMappings().isEmpty()) {
             return configuration.queues().keySet().stream()
                 .map(WorkerQueues::normalize)
                 .collect(Collectors.toUnmodifiableSet());
         }
-        return configuration.groups().values().stream()
+        return configuration.groupQueueMappings().values().stream()
             .flatMap(group -> group.queues().stream())
             .map(QueueSubscription::workerQueueId)
             .map(WorkerQueues::normalize)
