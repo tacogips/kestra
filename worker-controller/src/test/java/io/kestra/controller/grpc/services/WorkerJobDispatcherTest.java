@@ -155,7 +155,8 @@ class WorkerJobDispatcherTest {
 
     private WorkerJobDispatcher buildDispatcher(List<WorkerLifecycleListener> listeners) {
         return new WorkerJobDispatcher(
-            mockQueue, mockStateStore, mockKillQueue, mockClusterEventQueue, mockResultQueue, mockTriggerEventQueue, mockMetricRegistry, mock(MetadataChangeListener.class), new WorkerQueueResolver.Default(), listeners
+            mockQueue, mockStateStore, mockKillQueue, mockClusterEventQueue, mockResultQueue, mockTriggerEventQueue, mockMetricRegistry, mock(MetadataChangeListener.class),
+            new WorkerQueueResolver.Default(), listeners
         );
     }
 
@@ -659,6 +660,57 @@ class WorkerJobDispatcherTest {
         }
 
         @Test
+        void shouldKeepOnlyOneQueueIndexWhenSameWorkerIdRegistersConcurrently() throws InterruptedException, QueueException {
+            // Given
+            WorkerStreamContext<WorkerJobResponse> queueA = createWorkerContext("worker-1", "group-a", "queue-a", 10);
+            WorkerStreamContext<WorkerJobResponse> queueB = createWorkerContext("worker-1", "group-b", "queue-b", 10);
+            queueA.setPermits(10);
+            queueB.setPermits(10);
+
+            CyclicBarrier barrier = new CyclicBarrier(2);
+            CountDownLatch latch = new CountDownLatch(2);
+            ExecutorService executor = Executors.newFixedThreadPool(2);
+            AtomicInteger errors = new AtomicInteger(0);
+
+            try {
+                for (WorkerStreamContext<WorkerJobResponse> context : List.of(queueA, queueB)) {
+                    executor.submit(() ->
+                    {
+                        try {
+                            barrier.await();
+                            dispatcher.registerWorker(context);
+                        } catch (Exception e) {
+                            errors.incrementAndGet();
+                        } finally {
+                            latch.countDown();
+                        }
+                    });
+                }
+                assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
+            } finally {
+                executor.shutdownNow();
+            }
+
+            // Then - only one stream wins and only that stream's queue remains indexed.
+            assertThat(errors.get()).isZero();
+            assertThat(dispatcher.getActiveWorkerCount()).isEqualTo(1);
+            assertThat(dispatcher.getActiveWorkerCount("queue-a") + dispatcher.getActiveWorkerCount("queue-b")).isEqualTo(1);
+            assertThat(dispatcher.getWorkerIdsByWorkerGroup("group-a").size() + dispatcher.getWorkerIdsByWorkerGroup("group-b").size()).isEqualTo(1);
+
+            String inactiveQueue = dispatcher.getActiveWorkerCount("queue-a") == 0 ? "queue-a" : "queue-b";
+            MockQueueSubscriber inactiveSubscriber = getSubscriberForGroup(inactiveQueue);
+            assertThat(inactiveSubscriber).isNotNull();
+            assertThat(inactiveSubscriber.closed.get()).isTrue();
+
+            WorkerJobEvent inactiveJob = createJobEvent("job-inactive-queue", inactiveQueue);
+            inactiveSubscriber.deliverJob(inactiveJob);
+
+            verify(queueA.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+            verify(queueB.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+            verify(mockQueue).emit(eq(inactiveQueue), eq(inactiveJob));
+        }
+
+        @Test
         void shouldHandleConcurrentRegisterAndUnregister() throws InterruptedException {
             // Given
             int numIterations = 50;
@@ -672,15 +724,15 @@ class WorkerJobDispatcherTest {
                     final String workerId = "worker-" + i;
                     final WorkerStreamContext<WorkerJobResponse> context = createWorkerContext(workerId, WORKER_GROUP_A, 10);
                     executor.submit(() ->
-                        {
-                            try {
-                                dispatcher.registerWorker(context);
-                            } catch (Exception e) {
-                                errors.incrementAndGet();
-                            } finally {
-                                latch.countDown();
-                            }
-                        });
+                    {
+                        try {
+                            dispatcher.registerWorker(context);
+                        } catch (Exception e) {
+                            errors.incrementAndGet();
+                        } finally {
+                            latch.countDown();
+                        }
+                    });
 
                     executor.submit(() ->
                     {
@@ -1050,6 +1102,35 @@ class WorkerJobDispatcherTest {
         assertThat(activeSubscriber).isNotNull();
     }
 
+    @Test
+    void shouldReplaceExistingStreamBeforeRegisteringSameWorkerIdInDifferentQueue() throws QueueException {
+        // Given - stream A is still active for queue-a
+        WorkerStreamContext<WorkerJobResponse> streamA = createWorkerContext("worker-1", "group-a", "queue-a", 10);
+        streamA.setPermits(10);
+        dispatcher.registerWorker(streamA);
+        MockQueueSubscriber queueASubscriber = getSubscriberForGroup("queue-a");
+
+        // When - the same workerId reconnects as stream B with a different worker group / queue
+        WorkerStreamContext<WorkerJobResponse> streamB = createWorkerContext("worker-1", "group-b", "queue-b", 10);
+        streamB.setPermits(10);
+        dispatcher.registerWorker(streamB);
+
+        // Then - old queue and worker-group indices are removed before jobs can target stream B
+        assertThat(dispatcher.getActiveWorkerCount()).isEqualTo(1);
+        assertThat(dispatcher.getActiveWorkerCount("queue-a")).isZero();
+        assertThat(dispatcher.getActiveWorkerCount("queue-b")).isEqualTo(1);
+        assertThat(dispatcher.getWorkerIdsByWorkerGroup("group-a")).isEmpty();
+        assertThat(dispatcher.getWorkerIdsByWorkerGroup("group-b")).containsExactly("worker-1");
+        assertThat(queueASubscriber.closed.get()).isTrue();
+        verify(streamA.getResponseObserver()).onCompleted();
+
+        WorkerJobEvent oldQueueJob = createJobEvent("job-old-queue", "queue-a");
+        queueASubscriber.deliverJob(oldQueueJob);
+
+        verify(streamB.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+        verify(mockQueue).emit(eq("queue-a"), eq(oldQueueJob));
+    }
+
     // --- Multi-Group Tests ---
 
     private WorkerStreamContext<WorkerJobResponse> createMultiGroupWorkerContext(
@@ -1177,8 +1258,11 @@ class WorkerJobDispatcherTest {
         // (least-loaded) worker simulates losing the permit CAS race to a
         // concurrent dispatch on another Worker Queue. The dispatcher must fall
         // through to the next candidate instead of pausing the subscription.
-        var subs = List.of(new io.kestra.core.worker.QueueSubscription(
-            WORKER_GROUP_A, io.kestra.core.worker.QueueSubscription.NO_RESERVATION));
+        var subs = List.of(
+            new io.kestra.core.worker.QueueSubscription(
+                WORKER_GROUP_A, io.kestra.core.worker.QueueSubscription.NO_RESERVATION
+            )
+        );
 
         @SuppressWarnings("unchecked")
         StreamObserver<WorkerJobResponse> obs1 = mock(StreamObserver.class);
@@ -1186,14 +1270,16 @@ class WorkerJobDispatcherTest {
         StreamObserver<WorkerJobResponse> obs2 = mock(StreamObserver.class);
 
         WorkerStreamContext<WorkerJobResponse> ctx1 = new WorkerStreamContext<>(
-            "worker-1", "", subs, 10, obs1) {
+            "worker-1", "", subs, 10, obs1
+        ) {
             @Override
             public boolean tryConsumePermit() {
                 return false; // simulate concurrent steal between filter and CAS
             }
         };
         WorkerStreamContext<WorkerJobResponse> ctx2 = createMultiGroupWorkerContext(
-            "worker-2", "", subs, 10);
+            "worker-2", "", subs, 10
+        );
 
         ctx1.setPermits(5);
         ctx2.setPermits(5);
@@ -1219,8 +1305,11 @@ class WorkerJobDispatcherTest {
         // (another dispatch grabbed the last bucket slot between filter and
         // reserve). The dispatcher must restore the consumed permit and fall
         // through to the next candidate.
-        var subs = List.of(new io.kestra.core.worker.QueueSubscription(
-            WORKER_GROUP_A, io.kestra.core.worker.QueueSubscription.NO_RESERVATION));
+        var subs = List.of(
+            new io.kestra.core.worker.QueueSubscription(
+                WORKER_GROUP_A, io.kestra.core.worker.QueueSubscription.NO_RESERVATION
+            )
+        );
 
         @SuppressWarnings("unchecked")
         StreamObserver<WorkerJobResponse> obs1 = mock(StreamObserver.class);
@@ -1228,14 +1317,16 @@ class WorkerJobDispatcherTest {
         StreamObserver<WorkerJobResponse> obs2 = mock(StreamObserver.class);
 
         WorkerStreamContext<WorkerJobResponse> ctx1 = new WorkerStreamContext<>(
-            "worker-1", "", subs, 10, obs1) {
+            "worker-1", "", subs, 10, obs1
+        ) {
             @Override
             public String tryReserveBucket(String workerQueueId) {
                 return null; // simulate concurrent reservation took the last slot
             }
         };
         WorkerStreamContext<WorkerJobResponse> ctx2 = createMultiGroupWorkerContext(
-            "worker-2", "", subs, 10);
+            "worker-2", "", subs, 10
+        );
 
         ctx1.setPermits(5);
         ctx2.setPermits(5);
@@ -1480,9 +1571,13 @@ class WorkerJobDispatcherTest {
         dispatcher.registerWorker(context);
 
         // When — a disconnect event targets a worker not connected here
-        clusterEventConsumer.accept(Either.left(new ClusterEvent(
-            ClusterEvent.EventType.WORKER_DISCONNECT_REQUESTED, LocalDateTime.now(), "unknown-worker"
-        )));
+        clusterEventConsumer.accept(
+            Either.left(
+                new ClusterEvent(
+                    ClusterEvent.EventType.WORKER_DISCONNECT_REQUESTED, LocalDateTime.now(), "unknown-worker"
+                )
+            )
+        );
 
         // Then — no effect on connected workers
         assertThat(dispatcher.getActiveWorkerCount()).isEqualTo(1);
@@ -1653,14 +1748,15 @@ class WorkerJobDispatcherTest {
         StreamObserver<WorkerJobResponse> obsA = ctxA.getResponseObserver();
         StreamObserver<WorkerJobResponse> obsB = ctxB.getResponseObserver();
 
-        io.kestra.core.worker.MetadataChangePayload payload =
-            new io.kestra.core.worker.MetadataChangePayload(
-                io.kestra.core.worker.MetadataChangePayload.Type.NAMESPACE,
-                "tenant-a", "prod.team");
+        io.kestra.core.worker.MetadataChangePayload payload = new io.kestra.core.worker.MetadataChangePayload(
+            io.kestra.core.worker.MetadataChangePayload.Type.NAMESPACE,
+            "tenant-a", "prod.team"
+        );
 
         // When
         dispatcher.broadcastToAllWorkers(
-            new io.kestra.core.worker.WorkerBroadcastEvent.MetadataChangeEvent(payload));
+            new io.kestra.core.worker.WorkerBroadcastEvent.MetadataChangeEvent(payload)
+        );
 
         // Then — each worker's underlying StreamObserver should have received an onNext
         verify(obsA).onNext(any(WorkerJobResponse.class));
