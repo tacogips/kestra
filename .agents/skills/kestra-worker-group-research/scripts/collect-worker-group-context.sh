@@ -9,6 +9,18 @@ git branch --show-current
 git status --short
 
 echo
+echo "== fork diff baseline =="
+git rev-parse --verify main-freeze-before-fork >/dev/null 2>&1 && {
+  echo "baseline: main-freeze-before-fork ($(git rev-parse --short main-freeze-before-fork))"
+  echo
+  git diff --stat main-freeze-before-fork..main
+  echo
+  git diff --name-status main-freeze-before-fork..main
+} || {
+  echo "main-freeze-before-fork branch is not available in this checkout"
+}
+
+echo
 echo "== tacogips worker routing commits =="
 git log --all \
   --author='tacogips' \
