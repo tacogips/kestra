@@ -764,6 +764,57 @@ class WorkerJobDispatcherTest {
         }
 
         @Test
+        void shouldKeepOnlyOneQueueIndexWhenSameWorkerIdRegistersConcurrently() throws InterruptedException, QueueException {
+            // Given
+            WorkerStreamContext<WorkerJobResponse> queueA = createWorkerContext("worker-1", "group-a", "queue-a", 10);
+            WorkerStreamContext<WorkerJobResponse> queueB = createWorkerContext("worker-1", "group-b", "queue-b", 10);
+            queueA.setPermits(10);
+            queueB.setPermits(10);
+
+            CyclicBarrier barrier = new CyclicBarrier(2);
+            CountDownLatch latch = new CountDownLatch(2);
+            ExecutorService executor = Executors.newFixedThreadPool(2);
+            AtomicInteger errors = new AtomicInteger(0);
+
+            try {
+                for (WorkerStreamContext<WorkerJobResponse> context : List.of(queueA, queueB)) {
+                    executor.submit(() ->
+                    {
+                        try {
+                            barrier.await();
+                            dispatcher.registerWorker(context);
+                        } catch (Exception e) {
+                            errors.incrementAndGet();
+                        } finally {
+                            latch.countDown();
+                        }
+                    });
+                }
+                assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
+            } finally {
+                executor.shutdownNow();
+            }
+
+            // Then - only one stream wins and only that stream's queue remains indexed.
+            assertThat(errors.get()).isZero();
+            assertThat(dispatcher.getActiveWorkerCount()).isEqualTo(1);
+            assertThat(dispatcher.getActiveWorkerCount("queue-a") + dispatcher.getActiveWorkerCount("queue-b")).isEqualTo(1);
+            assertThat(dispatcher.getWorkerIdsByWorkerGroup("group-a").size() + dispatcher.getWorkerIdsByWorkerGroup("group-b").size()).isEqualTo(1);
+
+            String inactiveQueue = dispatcher.getActiveWorkerCount("queue-a") == 0 ? "queue-a" : "queue-b";
+            MockQueueSubscriber inactiveSubscriber = getSubscriberForGroup(inactiveQueue);
+            assertThat(inactiveSubscriber).isNotNull();
+            assertThat(inactiveSubscriber.closed.get()).isTrue();
+
+            WorkerJobEvent inactiveJob = createJobEvent("job-inactive-queue", inactiveQueue);
+            inactiveSubscriber.deliverJob(inactiveJob);
+
+            verify(queueA.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+            verify(queueB.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+            verify(mockQueue).emit(eq(inactiveQueue), eq(inactiveJob));
+        }
+
+        @Test
         void shouldHandleConcurrentRegisterAndUnregister() throws InterruptedException {
             // Given
             int numIterations = 50;
@@ -1153,6 +1204,35 @@ class WorkerJobDispatcherTest {
             .findFirst()
             .orElse(null);
         assertThat(activeSubscriber).isNotNull();
+    }
+
+    @Test
+    void shouldReplaceExistingStreamBeforeRegisteringSameWorkerIdInDifferentQueue() throws QueueException {
+        // Given - stream A is still active for queue-a
+        WorkerStreamContext<WorkerJobResponse> streamA = createWorkerContext("worker-1", "group-a", "queue-a", 10);
+        streamA.setPermits(10);
+        dispatcher.registerWorker(streamA);
+        MockQueueSubscriber queueASubscriber = getSubscriberForGroup("queue-a");
+
+        // When - the same workerId reconnects as stream B with a different worker group / queue
+        WorkerStreamContext<WorkerJobResponse> streamB = createWorkerContext("worker-1", "group-b", "queue-b", 10);
+        streamB.setPermits(10);
+        dispatcher.registerWorker(streamB);
+
+        // Then - old queue and worker-group indices are removed before jobs can target stream B
+        assertThat(dispatcher.getActiveWorkerCount()).isEqualTo(1);
+        assertThat(dispatcher.getActiveWorkerCount("queue-a")).isZero();
+        assertThat(dispatcher.getActiveWorkerCount("queue-b")).isEqualTo(1);
+        assertThat(dispatcher.getWorkerIdsByWorkerGroup("group-a")).isEmpty();
+        assertThat(dispatcher.getWorkerIdsByWorkerGroup("group-b")).containsExactly("worker-1");
+        assertThat(queueASubscriber.closed.get()).isTrue();
+        verify(streamA.getResponseObserver()).onCompleted();
+
+        WorkerJobEvent oldQueueJob = createJobEvent("job-old-queue", "queue-a");
+        queueASubscriber.deliverJob(oldQueueJob);
+
+        verify(streamB.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+        verify(mockQueue).emit(eq("queue-a"), eq(oldQueueJob));
     }
 
     // --- Multi-Group Tests ---
