@@ -243,7 +243,8 @@ sequenceDiagram
     Worker->>Controller: open worker job stream(workerGroupId, maxConcurrency)
     Controller->>Resolver: resolve(workerGroupId)
     Resolver-->>Controller: queue subscriptions
-    Controller-->>Worker: register stream for subscribed queues
+    Controller->>Queue: subscribe to resolved Worker Queue keys
+    Controller-->>Worker: keep gRPC stream registered
 
     Executor->>QueueService: resolveWorkerQueueForJob(flow, task or trigger)
     QueueService->>MetaStore: resolveQueueIdsByTags(workerSelector.tags, tenant, match)
@@ -254,6 +255,39 @@ sequenceDiagram
     Controller-->>Worker: dispatch job to subscribed worker
     Worker-->>Controller: job result
 ```
+
+The worker process does not subscribe to the backend `WorkerJobEvent` queue
+directly, and it is not sent the list of Worker Queue ids it serves. It only
+declares a `workerGroupId` when connecting. The controller resolves that group
+with `ConfiguredWorkerQueueResolver`, creates controller-side subscriptions to
+the corresponding Worker Queue keys, and forwards matching jobs to eligible
+workers over the long-lived gRPC worker job stream. The worker then buffers the
+received jobs in its local in-process queue before executing them.
+
+The long-lived gRPC worker job stream infrastructure is not introduced by this
+fork. `GrpcWorkerControllerService`, `WorkerStreamContext`, `WorkerJobDispatcher`,
+and the default `WorkerQueueResolver` already provide the worker stream,
+`workerGroupId`, queue subscription, and response observer plumbing. This fork
+adds `ConfiguredWorkerQueueResolver` to resolve `workerGroupId` from static OSS
+configuration, and tightens `WorkerJobDispatcher` registration bookkeeping so
+worker-group and Worker Queue indices remain consistent when workers reconnect.
+
+Once `ConfiguredWorkerQueueService` returns a `WorkerQueueRouting`, the executor
+normalizes that Worker Queue id into the keyed `WorkerJobEvent` dispatch key and
+emits the job to the existing worker job queue. `WorkerJobDispatcher` receives
+the event through its controller-side `QueueSubscriber`, finds a registered
+worker stream for that Worker Queue with available permits and capacity,
+persists the running state, wraps the job in a `WorkerJobResponse`, and calls
+the stream's `StreamObserver.onNext(...)`. If no subscribed worker has capacity,
+the dispatcher pauses that Worker Queue subscription and requeues the event so
+backpressure stays on the controller side.
+
+Worker Queue matching is not a broadcast mechanism. If a `workerSelector.tags`
+set matches multiple Worker Queue definitions, the resolver orders the matching
+queues and selects exactly one Worker Queue id for that `WorkerJob`. The executor
+emits the job once, using that single queue key. This avoids running the same
+`TaskRun` on multiple workers and keeps task results, retries, kill handling,
+and external side effects single-dispatch.
 
 ### Worker groups, Worker Queues, and worker configuration
 
