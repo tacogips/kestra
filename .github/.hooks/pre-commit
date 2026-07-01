@@ -16,17 +16,70 @@ if ! command -v java >/dev/null 2>&1; then
 fi
 
 
-java_staged_files=$(git --no-pager diff --cached --name-only | grep '\.java')
+java_staged_files=$(git --no-pager diff --cached --name-only --diff-filter=ACMR | grep '\.java$')
 if [ -n "$java_staged_files" ]; then
+  tmp_dir=$(mktemp -d)
+  java_staged_file_list="$tmp_dir/java-staged-files"
+  modified_file_list="$tmp_dir/modified-files"
+  non_target_file_list="$tmp_dir/non-target-files"
+  unstaged_stash_created=0
+
+  printf '%s\n' "$java_staged_files" > "$java_staged_file_list"
+
+  restore_non_target_spotless_changes() {
+    git diff --name-only > "$modified_file_list"
+    grep -Fvx -f "$java_staged_file_list" "$modified_file_list" > "$non_target_file_list" || true
+
+    if [ -s "$non_target_file_list" ]; then
+      echo "Restoring spotlessApply changes outside staged Java files..."
+      git restore --worktree --pathspec-from-file="$non_target_file_list" || return 1
+    fi
+
+    return 0
+  }
+
+  cleanup_java_hook() {
+    status=$?
+
+    if ! restore_non_target_spotless_changes; then
+      status=1
+    fi
+
+    if [ "$unstaged_stash_created" -eq 1 ]; then
+      if ! git stash pop --quiet; then
+        echo "Error: failed to restore unstaged changes after spotlessApply."
+        status=1
+      fi
+    fi
+
+    rm -rf "$tmp_dir"
+    return "$status"
+  }
+
+  trap 'cleanup_java_hook; exit $?' EXIT HUP INT TERM
+
   echo "Staged Java files: $java_staged_files"
   echo "Running spotlessApply on Java files..."
 
-  for file in $java_staged_files; do
+  if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    if git stash push --quiet --keep-index --include-untracked -m "pre-commit unstaged changes"; then
+      unstaged_stash_created=1
+    else
+      echo "Error: failed to stash unstaged changes before spotlessApply."
+      exit 1
+    fi
+  fi
+
+  while IFS= read -r file; do
     ./gradlew --no-build-cache spotlessApply -PtargetFile="$file" --continue
 
-  done
+  done < "$java_staged_file_list"
 
-  git add $java_staged_files
+  git add --pathspec-from-file="$java_staged_file_list"
+  restore_non_target_spotless_changes || exit $?
+
+  trap - EXIT HUP INT TERM
+  cleanup_java_hook || exit $?
 
   echo "spotlessApply completed."
 else
