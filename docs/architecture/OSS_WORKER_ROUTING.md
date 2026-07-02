@@ -51,8 +51,9 @@ Flow task workerSelector.tags
 ```
 
 No controller-to-worker SSH or HTTP callback is involved. Workers connect
-outbound to the controller and backend, then consume the queues assigned to
-their resolved group.
+outbound to the controller and backend. The controller owns the backend Worker
+Job queue subscriptions for each Worker Queue and forwards matching jobs to
+connected workers over the long-lived gRPC stream.
 
 ## Configuration
 
@@ -68,7 +69,8 @@ kestra:
         gce-gpu:
           queues:
             - workerQueueId: gce-gpu
-              reservedPercent: -1
+              reservedPercent: 100
+              mode: STRICT
         gce-cpu:
           queues:
             - workerQueueId: gce-cpu
@@ -127,10 +129,34 @@ kestra:
           tags: [gce, gpu]
 ```
 
+This compact form is a static same-name routing convenience. It is not live
+worker availability detection: the executor-side `ConfiguredWorkerQueueMetaStore`
+treats every configured queue as statically routable, while the controller
+subscribes each connected worker only to the queue matching that worker's
+requested group id. If no worker for that same-name queue is connected, jobs
+remain queued until a matching worker connects.
+
 Every `workerQueueId` referenced from `groupQueueMappings.*.queues` must either
 be a configured entry under `queues` or one of the reserved queues (`default` or
 `system`). Kestra fails configuration loading when a mapping points at an
 undefined Worker Queue.
+
+If a worker requests an unknown custom `workerGroupId`, the controller logs a
+warning and subscribes that worker to the default Worker Queue. The reserved
+`system` group maps to the system queue, and an absent or empty `workerGroupId`
+normalizes to the default group.
+
+`reservedPercent` controls the minimum percentage of a worker's slots reserved
+for a queue subscription. Use `-1` (`QueueSubscription.NO_RESERVATION`) when a
+queue should consume only shared, unreserved capacity. Positive values reserve
+that percentage of capacity and must sum to at most `100` for each
+`groupQueueMappings` entry; Kestra fails configuration loading when a group's
+positive reservations exceed `100`. A total exactly equal to `100` is valid, and
+`-1` entries do not contribute to the total.
+
+`mode` controls how reserved slots are shared. `STRICT` is the default and keeps
+the subscription's reserved slots exclusive. `ELASTIC` allows the subscription's
+idle reserved slots to be borrowed by other subscriptions on the same worker.
 
 ## Flow Usage
 
@@ -172,13 +198,25 @@ Routing resolution is intentionally deterministic:
 - `match: ANY` requires at least one requested tag;
 - queues restricted by `tenants` are ignored for other tenants;
 - queues already subscribed by configured groups are preferred;
-- when multiple queues still match, the queue with fewer extra tags is chosen,
-  then the queue id is used as a stable tie breaker.
+- when multiple queues still match, they are ranked by fewer extra tags and then
+  queue id as a stable tie breaker;
+- the ranked candidates are checked in order, and dispatch uses the first queue
+  the configured metadata store reports as active;
+- if no ranked candidate is reported active, the selector fallback is applied to
+  the best-ranked queue.
 
 If no queue matches, `fallback: IGNORE` routes to the default queue. Other
 fallbacks keep their normal meaning: `FAIL` fails routing, `CANCEL` cancels the
 job, and `WAIT` waits for the selected queue to become available when a queue is
-known but no matching worker is connected.
+known but not reported active.
+
+In this OSS implementation the configured metadata store is static process
+configuration, not live worker presence. With explicit `groupQueueMappings`, a
+queue is reported active when some configured group subscribes to it. In compact
+mode, every configured queue is reported active as a same-name routing candidate.
+That means `fallback` does not detect configured-but-unserved compact-mode
+queues; the job is dispatched to the selected worker queue and remains queued
+until a worker whose group subscribes to that queue connects.
 
 ## Local And Staging
 
@@ -215,6 +253,69 @@ kestra:
 Production can split those same queue ids across multiple GCE and on-prem
 workers by changing only `workerGroupId` and group subscriptions.
 
+## Observability
+
+Controller processes expose queue-scoped gauges for every statically configured
+Worker Queue, even before any worker has connected:
+
+- `controller.worker.active{worker_queue="<id>"}`;
+- `controller.permits.available{worker_queue="<id>"}`;
+- `controller.job.inflight{worker_queue="<id>"}`.
+
+These gauges report `0` for configured-but-unserved queues and remain registered
+after the last worker disconnects. Dynamically observed, nonconfigured queue
+gauges still keep the existing cleanup behavior and are removed when the last
+worker disconnects. No extra queue subscriber is created just to publish the zero
+gauges.
+
+Use the configured queue gauges with backend queue lag to alert on stuck routed
+work. The practical signal is:
+
+```text
+queue.message.lag{queue_name="<workerQueueId>"} > 0
+and
+controller.worker.active{worker_queue="<workerQueueId>"} == 0
+```
+
+The exact `queue_name` label value depends on the queue backend, but it should
+identify the same Worker Queue key used by `worker_queue`. This alert detects a
+configured queue accumulating jobs while no controller has an active worker for
+that queue.
+
+Every process that loads a static routing table also logs a deterministic
+SHA-256 routing-table fingerprint at startup and publishes
+`worker.routing.configuration{routing_fingerprint="<sha256>"} 1`. The
+fingerprint covers `queues` and `groupQueueMappings`, not a worker process'
+local `workerGroupId`. Compare the fingerprint across executor, scheduler, and
+controller processes during and after a rollout; a mismatch means processes are
+resolving `workerSelector.tags` and Worker Group subscriptions from different
+tables.
+
+## Static Routing Restart Order
+
+The OSS routing table is static process configuration. Changes to `queues`,
+`groupQueueMappings`, or a worker's `workerGroupId` are not hot-reloaded and do
+not emit a `WORKER_GROUP_SYNC_REQUESTED` event. Operators must roll the affected
+processes in an order that keeps executor and scheduler route decisions aligned
+with the controller's subscriptions:
+
+1. Roll controller processes with the updated `queues` and
+   `groupQueueMappings`.
+2. Roll affected workers so they reconnect to the updated controller and receive
+   the expected queue subscriptions. Confirm each worker logs the expected
+   resolved `workerGroupId`.
+3. Confirm controller metrics show the expected worker group and worker queue
+   labels for at least one connected worker serving each new queue, and that the
+   controller routing fingerprint matches the new table.
+4. Roll executor and scheduler processes with the same routing table so task and
+   trigger `workerSelector.tags` start resolving only after subscribers exist.
+   Confirm their routing fingerprints match the controller.
+
+For worker-only changes to an already configured group, rolling the affected
+workers is sufficient. When removing a queue, first stop or migrate flows and
+triggers that route to it, then roll executor/scheduler so they stop emitting to
+that queue, then remove controller subscriptions and worker group configuration.
+
 ## Limitations
 
 - This is static OSS routing, not full Enterprise Worker Groups.
@@ -230,6 +331,46 @@ workers by changing only `workerGroupId` and group subscriptions.
   remote workers to connect must still protect controller gRPC, database, and
   storage credentials at the network and secret-management layers.
 
+## Static Limitation: Unserved Queue Deadlines
+
+The OSS routing layer does not add a max-wait deadline or dead-letter transition
+for a job after it has been emitted to a keyed Worker Job queue. This is an
+explicit static-routing limitation.
+
+Fallback is applied only at routing time, before enqueue, and only when the
+configured metadata store cannot find a statically active queue among the
+matched candidates:
+
+- `FAIL` (also the default when `fallback` is omitted): task jobs fail before
+  enqueue; trigger jobs are ignored with an error log and routing-failure
+  metric.
+- `CANCEL`: task jobs are cancelled before enqueue; trigger jobs are ignored
+  with a warning log and routing-failure metric because there is no task run to
+  cancel.
+- `IGNORE`: the tag requirement is dropped and the job is emitted to the
+  default Worker Job queue.
+- `WAIT`: the job is emitted to the matched Worker Queue and waits in the
+  durable keyed queue until a worker that subscribes to that queue connects.
+
+Once a Worker Queue is statically reported active, fallback no longer runs. In
+explicit `groupQueueMappings`, a queue is active when at least one configured
+worker group subscribes to it; in compact mode, every configured queue is active
+as a same-name candidate. If no connected worker currently serves that queue,
+the task or trigger job is still emitted to the selected Worker Queue and waits
+there unbounded by design. A matching worker connection creates the controller
+subscriber and drains the queue; until then, backend queue lag plus
+`controller.worker.active{worker_queue="<id>"} == 0` is the intended detection
+signal.
+
+A real deadline/dead-letter feature would need queue-contract work below this
+static routing layer: message enqueue timestamps or deadlines, an atomic way to
+move expired keyed messages to a terminal result or dead-letter destination, and
+backend support across the keyed queue implementations. The current
+`KeyedDispatchQueueInterface` exposes emit, subscribe, pause/resume, and lag
+only. Creating controller subscribers solely to inspect unserved queues would
+risk consuming and re-queuing jobs without a connected worker, creating the hot
+loop this design avoids.
+
 ## Verification
 
 Run the focused tests that cover routing resolution and worker connection
@@ -237,8 +378,12 @@ behavior:
 
 ```bash
 ./gradlew :core:test --tests "io.kestra.core.services.WorkerQueueServiceTest"
+./gradlew :core:test --tests "io.kestra.core.worker.WorkerRoutingConfigurationTest"
+./gradlew :core:test --tests "io.kestra.core.runners.ConfiguredWorkerQueueMetaStoreTest"
 ./gradlew :worker-controller:test --tests "io.kestra.controller.grpc.services.ConfiguredWorkerQueueResolverTest"
 ./gradlew :worker-controller:test --tests "io.kestra.controller.grpc.services.GrpcConnectControllerServiceTest"
+./gradlew :worker-controller:test --tests "io.kestra.controller.grpc.services.WorkerJobDispatcherTest"
+./gradlew :scheduler:test --tests "io.kestra.scheduler.pubsub.TriggerWorkerJobPublisherTest"
 ```
 
 For a live or integration environment, verify the following operational
@@ -248,8 +393,9 @@ invariants:
 - controller-side worker queue metrics include the expected worker group and
   worker queue labels;
 - a task with `workerSelector.tags` lands on the expected worker host;
-- a selected queue with no connected worker waits, fails, cancels, or falls
-  back according to the task's `fallback` policy;
+- a configured-but-unserved queue remains queued until a matching worker
+  connects; compact-mode fallback does not apply after tags select a configured
+  queue;
 - the controller host can observe execution state and rerun tasks without
   opening inbound access to private worker machines.
 
