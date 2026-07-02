@@ -206,6 +206,8 @@ Kestra's plugin ecosystem is continually expanding, allowing you to tailor the p
 
 This fork includes static, configuration-backed worker group routing for OSS deployments. It keeps the upstream OSS worker dispatch path as the default, then adds a routing step only when operators define worker groups and worker queues in `kestra.worker.routing` and a job declares `workerSelector.tags`.
 
+See [OSS Worker Routing](docs/architecture/OSS_WORKER_ROUTING.md) for the full architecture notes, configuration examples, verification steps, and static-routing limitations.
+
 Upstream OSS sequence, unchanged when routing is not configured:
 
 ```mermaid
@@ -284,10 +286,11 @@ backpressure stays on the controller side.
 
 Worker Queue matching is not a broadcast mechanism. If a `workerSelector.tags`
 set matches multiple Worker Queue definitions, the resolver orders the matching
-queues and selects exactly one Worker Queue id for that `WorkerJob`. The executor
-emits the job once, using that single queue key. This avoids running the same
-`TaskRun` on multiple workers and keeps task results, retries, kill handling,
-and external side effects single-dispatch.
+queues and selects exactly one Worker Queue id for that `WorkerJob`: the first
+statically active candidate, or the best-ranked candidate when fallback must be
+applied. The executor emits the job once, using that single queue key. This
+avoids running the same `TaskRun` on multiple workers and keeps task results,
+retries, kill handling, and external side effects single-dispatch.
 
 ### Worker groups, Worker Queues, and worker configuration
 
@@ -407,6 +410,18 @@ be a configured entry under `queues` or one of the reserved queues (`default` or
 `system`). Kestra fails configuration loading when a mapping points at an
 undefined Worker Queue.
 
+`reservedPercent` reserves part of a worker's slots for a queue subscription.
+Use `-1` for no reservation. Positive reservation values in one Worker Group
+must sum to at most `100`; Kestra fails configuration loading when a group
+exceeds that total. `mode` defaults to `STRICT`, which keeps reserved slots
+exclusive. `ELASTIC` allows this subscription's idle reserved slots to be
+borrowed by other subscriptions on the same worker.
+
+If a worker advertises an unknown custom `workerGroupId`, the controller logs a
+warning and subscribes it to the default Worker Queue. The reserved `system`
+group still maps to the system queue, and an absent or empty `workerGroupId`
+normalizes to the default group.
+
 Invalid example:
 
 ```yaml
@@ -431,7 +446,22 @@ Database impact in this fork:
 - Worker group and worker queue metadata is static and configuration-backed through `kestra.worker.routing`, not repository-backed.
 - Routed jobs keep using the existing `WorkerJobEvent` queue storage; the fork only changes the queue key chosen before dispatch.
 
-If routing is not configured, or a job has no `workerSelector.tags`, Kestra keeps the default OSS worker queue behavior. If a matching queue has no connected worker, the selector `fallback` decides whether to wait, fail, cancel, or ignore the route. See [OSS Worker Routing](docs/architecture/OSS_WORKER_ROUTING.md) for configuration examples and operational checks.
+If routing is not configured, or a job has no `workerSelector.tags`, Kestra
+keeps the default OSS worker queue behavior. Fallback is applied at routing time
+when no matching queue exists, or when no matched queue is statically routable
+from the configured `groupQueueMappings`. Once a queue is statically routable,
+the job is emitted to that queue; if no connected worker currently serves it,
+the job remains in the durable keyed queue until a matching worker connects.
+
+Operationally, configured queue gauges are registered even before workers
+connect, so `controller.worker.active{worker_queue="<id>"} == 0` combined with
+backend queue lag is the stuck-queue signal. Processes also log and publish a
+`worker.routing.configuration{routing_fingerprint="<sha256>"} 1` gauge so
+operators can compare the static routing table across controller, executor, and
+scheduler processes during rollouts. See
+[OSS Worker Routing](docs/architecture/OSS_WORKER_ROUTING.md) for the full
+fallback semantics, restart order, observability details, and static
+deadline/dead-letter limitation.
 
 ---
 

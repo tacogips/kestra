@@ -19,6 +19,10 @@ import jakarta.inject.Singleton;
 
 /**
  * Static config-backed Worker Queue metadata store for OSS deployments.
+ * <p>
+ * This store does not observe live controller-side worker streams. In compact
+ * mode, where {@code groupQueueMappings} is empty, every configured Worker Queue
+ * is treated as a same-name static subscription candidate.
  */
 @Singleton
 @Requires(bean = WorkerRoutingConfiguration.class)
@@ -29,6 +33,9 @@ public class ConfiguredWorkerQueueMetaStore implements WorkerQueueMetaStore {
         this.configuration = configuration;
     }
 
+    /**
+     * Checks static routability from configuration, not live connected-worker availability.
+     */
     @Override
     public boolean hasActiveWorkerForQueue(String id) {
         String queueId = WorkerQueues.normalize(id);
@@ -73,6 +80,8 @@ public class ConfiguredWorkerQueueMetaStore implements WorkerQueueMetaStore {
 
     private Set<String> subscribedQueueIds() {
         if (configuration.groupQueueMappings().isEmpty()) {
+            // Compact mode is a static same-name routing convenience, not live
+            // worker availability detection.
             return configuration.queues().keySet().stream()
                 .map(WorkerQueues::normalize)
                 .collect(Collectors.toUnmodifiableSet());

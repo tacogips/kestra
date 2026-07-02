@@ -3,6 +3,7 @@ package io.kestra.controller.grpc.services;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
@@ -41,9 +42,11 @@ import io.kestra.core.server.ClusterEvent;
 import io.kestra.core.utils.Either;
 import io.kestra.core.worker.WorkerGroups;
 import io.kestra.core.worker.WorkerQueues;
+import io.kestra.core.worker.WorkerRoutingConfiguration;
 
 import io.grpc.stub.StreamObserver;
 import io.micrometer.core.instrument.search.Search;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -156,7 +159,14 @@ class WorkerJobDispatcherTest {
     private WorkerJobDispatcher buildDispatcher(List<WorkerLifecycleListener> listeners) {
         return new WorkerJobDispatcher(
             mockQueue, mockStateStore, mockKillQueue, mockClusterEventQueue, mockResultQueue, mockTriggerEventQueue, mockMetricRegistry, mock(MetadataChangeListener.class),
-            new WorkerQueueResolver.Default(), listeners
+            new WorkerQueueResolver.Default(), new WorkerRoutingConfiguration(null, Map.of(), Map.of()), listeners
+        );
+    }
+
+    private WorkerJobDispatcher buildDispatcher(MetricRegistry metricRegistry, WorkerRoutingConfiguration workerRoutingConfiguration) {
+        return new WorkerJobDispatcher(
+            mockQueue, mockStateStore, mockKillQueue, mockClusterEventQueue, mockResultQueue, mockTriggerEventQueue, metricRegistry, mock(MetadataChangeListener.class),
+            new WorkerQueueResolver.Default(), workerRoutingConfiguration, List.of()
         );
     }
 
@@ -266,6 +276,115 @@ class WorkerJobDispatcherTest {
             assertThat(dispatcher.getActiveWorkerCount(WORKER_GROUP_A)).isEqualTo(1);
             assertThat(dispatcher.getActiveWorkerCount(WORKER_GROUP_B)).isEqualTo(1);
             assertThat(createdSubscribers).hasSize(2);
+        }
+
+        @Test
+        void shouldExposeZeroGaugesForConfiguredQueuesWithoutCreatingSubscriber() {
+            // Given
+            dispatcher.close();
+            SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+            MetricRegistry realMetricRegistry = new MetricRegistry(meterRegistry, new io.kestra.core.metrics.MetricConfig());
+
+            // When
+            dispatcher = buildDispatcher(
+                realMetricRegistry, new WorkerRoutingConfiguration(
+                    null,
+                    Map.of(),
+                    Map.of("gpu", new WorkerRoutingConfiguration.WorkerQueue(List.of("gpu"), List.of()))
+                )
+            );
+
+            // Then
+            assertThat(createdSubscribers).isEmpty();
+            assertThat(
+                meterRegistry.find(MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE)
+                    .tag(MetricRegistry.TAG_WORKER_QUEUE, "gpu")
+                    .gauge()
+                    .value()
+            ).isZero();
+            assertThat(
+                meterRegistry.find(MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE)
+                    .tag(MetricRegistry.TAG_WORKER_QUEUE, "gpu")
+                    .gauge()
+                    .value()
+            ).isZero();
+            assertThat(
+                meterRegistry.find(MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT)
+                    .tag(MetricRegistry.TAG_WORKER_QUEUE, "gpu")
+                    .gauge()
+                    .value()
+            ).isZero();
+        }
+
+        @Test
+        void shouldKeepConfiguredQueueGaugesAfterLastWorkerDisconnects() {
+            // Given
+            dispatcher.close();
+            SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+            MetricRegistry realMetricRegistry = new MetricRegistry(meterRegistry, new io.kestra.core.metrics.MetricConfig());
+            dispatcher = buildDispatcher(
+                realMetricRegistry, new WorkerRoutingConfiguration(
+                    null,
+                    Map.of(),
+                    Map.of("gpu", new WorkerRoutingConfiguration.WorkerQueue(List.of("gpu"), List.of()))
+                )
+            );
+            WorkerStreamContext<WorkerJobResponse> context = createWorkerContext("worker-1", WORKER_GROUP_A, "gpu", 10);
+
+            // When
+            dispatcher.registerWorker(context);
+            dispatcher.unregisterWorker(context);
+
+            // Then
+            assertThat(
+                meterRegistry.find(MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE)
+                    .tag(MetricRegistry.TAG_WORKER_QUEUE, "gpu")
+                    .gauge()
+                    .value()
+            ).isZero();
+            assertThat(
+                meterRegistry.find(MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE)
+                    .tag(MetricRegistry.TAG_WORKER_QUEUE, "gpu")
+                    .gauge()
+                    .value()
+            ).isZero();
+            assertThat(
+                meterRegistry.find(MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT)
+                    .tag(MetricRegistry.TAG_WORKER_QUEUE, "gpu")
+                    .gauge()
+                    .value()
+            ).isZero();
+        }
+
+        @Test
+        void shouldRemoveDynamicQueueGaugesAfterLastWorkerDisconnects() {
+            // Given
+            dispatcher.close();
+            SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+            MetricRegistry realMetricRegistry = new MetricRegistry(meterRegistry, new io.kestra.core.metrics.MetricConfig());
+            dispatcher = buildDispatcher(realMetricRegistry, new WorkerRoutingConfiguration(null, Map.of(), Map.of()));
+            WorkerStreamContext<WorkerJobResponse> context = createWorkerContext("worker-1", WORKER_GROUP_A, "gpu", 10);
+
+            // When
+            dispatcher.registerWorker(context);
+            dispatcher.unregisterWorker(context);
+
+            // Then
+            assertThat(
+                meterRegistry.find(MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE)
+                    .tag(MetricRegistry.TAG_WORKER_QUEUE, "gpu")
+                    .gauge()
+            ).isNull();
+            assertThat(
+                meterRegistry.find(MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE)
+                    .tag(MetricRegistry.TAG_WORKER_QUEUE, "gpu")
+                    .gauge()
+            ).isNull();
+            assertThat(
+                meterRegistry.find(MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT)
+                    .tag(MetricRegistry.TAG_WORKER_QUEUE, "gpu")
+                    .gauge()
+            ).isNull();
         }
 
         @Test

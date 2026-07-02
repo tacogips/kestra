@@ -54,6 +54,7 @@ import io.kestra.core.worker.MetadataChangePayload;
 import io.kestra.core.worker.QueueSubscription;
 import io.kestra.core.worker.WorkerBroadcastEvent;
 import io.kestra.core.worker.WorkerQueues;
+import io.kestra.core.worker.WorkerRoutingConfiguration;
 
 import io.micronaut.core.annotation.Nullable;
 import jakarta.annotation.PreDestroy;
@@ -160,6 +161,8 @@ public class WorkerJobDispatcher {
     private final MetadataChangeListener metadataChangeListener;
 
     private final WorkerQueueResolver workerQueueResolver;
+    private final Set<String> staticWorkerQueueIds;
+    private final Set<String> registeredWorkerQueueGauges = ConcurrentHashMap.newKeySet();
 
     /**
      * Listeners notified on worker stream lifecycle transitions. Set once at
@@ -178,6 +181,7 @@ public class WorkerJobDispatcher {
         MetricRegistry metricRegistry,
         MetadataChangeListener metadataChangeListener,
         WorkerQueueResolver workerQueueResolver,
+        WorkerRoutingConfiguration workerRoutingConfiguration,
         List<WorkerLifecycleListener> lifecycleListeners) {
         this.workerJobEventQueue = workerJobEventQueue;
         this.workerJobRunningStateStore = workerJobRunningStateStore;
@@ -186,6 +190,11 @@ public class WorkerJobDispatcher {
         this.metricRegistry = metricRegistry;
         this.metadataChangeListener = metadataChangeListener;
         this.workerQueueResolver = workerQueueResolver;
+        this.staticWorkerQueueIds = workerRoutingConfiguration == null
+            ? Set.of()
+            : workerRoutingConfiguration.configuredWorkerQueueIds().stream()
+                .map(WorkerJobDispatcher::toDispatchKey)
+                .collect(Collectors.toUnmodifiableSet());
         this.lifecycleListeners = List.copyOf(lifecycleListeners);
 
         // Construct broadcast subscribers and gauges with cleanup on partial failure.
@@ -234,6 +243,7 @@ public class WorkerJobDispatcher {
                     .mapToInt(WorkerStreamContext::getAvailablePermits)
                     .sum()
             );
+            staticWorkerQueueIds.forEach(this::registerWorkerQueueGauges);
 
             // Notify lifecycle listeners that the dispatcher is fully wired. No worker can
             // register yet — the gRPC service that drives registerWorker is built after this
@@ -486,7 +496,7 @@ public class WorkerJobDispatcher {
                 // Take responsibility for closing the subscriber to avoid a leak.
                 if (workerQueueStates.remove(workerQueueId, state)) {
                     closeSubscriberQuietly(state.subscriber(), workerQueueId);
-                    removeWorkerQueueGauges(workerQueueId);
+                    removeWorkerQueueGaugesIfDynamic(workerQueueId);
                 }
                 throw new IllegalStateException("WorkerJobDispatcher is closed");
             }
@@ -535,29 +545,7 @@ public class WorkerJobDispatcher {
 
             // Queue-scoped gauges: a Worker Queue can be served by workers from multiple
             // Worker Groups, so worker_group is not a meaningful dimension here.
-            String[] metricTags = metricRegistry.workerQueueTags(workerQueueId);
-            metricRegistry.gauge(
-                MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE,
-                MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE_DESCRIPTION,
-                (Supplier<Integer>) () ->
-                {
-                    Set<String> ids = workerIdsByWorkerQueue.get(workerQueueId);
-                    return ids == null ? 0 : ids.size();
-                },
-                metricTags
-            );
-            metricRegistry.gauge(
-                MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE,
-                MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE_DESCRIPTION,
-                (Supplier<Integer>) () -> getTotalPermitsForWorkerQueue(workerQueueId),
-                metricTags
-            );
-            metricRegistry.gauge(
-                MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT,
-                MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT_DESCRIPTION,
-                (Supplier<Integer>) () -> getWorkersInWorkerQueue(workerQueueId).mapToInt(WorkerStreamContext::getInFlightCount).sum(),
-                metricTags
-            );
+            registerWorkerQueueGauges(workerQueueId);
 
             return new WorkerQueueState(subscriber);
         } catch (Throwable t) {
@@ -654,7 +642,7 @@ public class WorkerJobDispatcher {
                         log.info("Disposing subscription for Worker Queue '{}': no workers remaining", WorkerQueues.forLog(workerQueueId));
                         workerIdsByWorkerQueue.remove(workerQueueId);
                         closeSubscriberQuietly(state.subscriber(), workerQueueId);
-                        removeWorkerQueueGauges(workerQueueId);
+                        removeWorkerQueueGaugesIfDynamic(workerQueueId);
                         workerQueueStates.remove(workerQueueId, state);
                     } else if (!hasAnyPermitsInWorkerQueue(workerQueueId)) {
                         // Workers exist but no permits - pause
@@ -1135,6 +1123,47 @@ public class WorkerJobDispatcher {
                 .gauges()
                 .forEach(metricRegistry::removeMeter);
         }
+        registeredWorkerQueueGauges.remove(workerQueueId);
+    }
+
+    private void removeWorkerQueueGaugesIfDynamic(String workerQueueId) {
+        if (!staticWorkerQueueIds.contains(workerQueueId)) {
+            removeWorkerQueueGauges(workerQueueId);
+        }
+    }
+
+    private void registerWorkerQueueGauges(String workerQueueId) {
+        if (!registeredWorkerQueueGauges.add(workerQueueId)) {
+            return;
+        }
+
+        String[] metricTags = metricRegistry.workerQueueTags(workerQueueId);
+        metricRegistry.gauge(
+            MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE,
+            MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE_DESCRIPTION,
+            (Supplier<Integer>) () ->
+            {
+                Set<String> ids = workerIdsByWorkerQueue.get(workerQueueId);
+                return ids == null ? 0 : ids.size();
+            },
+            metricTags
+        );
+        metricRegistry.gauge(
+            MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE,
+            MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE_DESCRIPTION,
+            (Supplier<Integer>) () -> getTotalPermitsForWorkerQueue(workerQueueId),
+            metricTags
+        );
+        metricRegistry.gauge(
+            MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT,
+            MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT_DESCRIPTION,
+            (Supplier<Integer>) () -> getWorkersInWorkerQueue(workerQueueId).mapToInt(WorkerStreamContext::getInFlightCount).sum(),
+            metricTags
+        );
+    }
+
+    private static String toDispatchKey(String workerQueueId) {
+        return WorkerQueues.isDefault(WorkerQueues.normalize(workerQueueId)) ? "" : WorkerQueues.normalize(workerQueueId);
     }
 
     /**
@@ -1206,7 +1235,7 @@ public class WorkerJobDispatcher {
                             workerQueueStates.remove(workerQueueId);
                             workerIdsByWorkerQueue.remove(workerQueueId);
                             closeSubscriberQuietly(state.subscriber(), workerQueueId);
-                            removeWorkerQueueGauges(workerQueueId);
+                            removeWorkerQueueGaugesIfDynamic(workerQueueId);
                         } else if (!hasAnyPermitsInWorkerQueue(workerQueueId)) {
                             pauseSubscription(state, workerQueueId);
                         }

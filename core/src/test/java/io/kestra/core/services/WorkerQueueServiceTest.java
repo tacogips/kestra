@@ -4,6 +4,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -15,6 +16,7 @@ import io.kestra.core.models.tasks.WorkerQueueFallback;
 import io.kestra.core.models.tasks.WorkerSelector;
 import io.kestra.core.models.tasks.WorkerSelectorMatch;
 import io.kestra.core.runners.ConfiguredWorkerQueueMetaStore;
+import io.kestra.core.runners.WorkerQueueMetaStore;
 import io.kestra.core.runners.WorkerQueueRouting;
 import io.kestra.core.runners.WorkerTask;
 import io.kestra.core.runners.WorkerTrigger;
@@ -192,6 +194,58 @@ class WorkerQueueServiceTest {
     }
 
     @Test
+    void shouldDispatchToLaterCandidateWhenFirstMatchingQueueIsUnavailable() throws NoMatchingWorkerQueueException {
+        // Given
+        WorkerTask workerTask = WorkerTask.builder()
+            .task(
+                Return.builder()
+                    .id("return")
+                    .workerSelector(new WorkerSelector(List.of("gpu"), WorkerQueueFallback.FAIL))
+                    .build()
+            )
+            .taskRun(TaskRun.builder().build())
+            .build();
+        WorkerQueueService service = configuredServiceWithMetaStore(
+            new StaticWorkerQueueMetaStore(List.of("gce-a", "gce-b"), Set.of("gce-b"))
+        );
+
+        // When
+        Optional<WorkerQueueRouting> result = service.resolveWorkerQueueForJob(buildFlow(), workerTask);
+
+        // Then
+        assertThat(result).isPresent();
+        assertThat(result.get().workerQueueId()).isEqualTo("gce-b");
+        assertThat(result.get().fallback()).isNull();
+        assertThat(result.get().disposition()).isEqualTo(WorkerQueueRouting.Disposition.DISPATCH);
+    }
+
+    @Test
+    void shouldApplyFallbackToBestRankedCandidateWhenAllMatchingQueuesAreUnavailable() throws NoMatchingWorkerQueueException {
+        // Given
+        WorkerTask workerTask = WorkerTask.builder()
+            .task(
+                Return.builder()
+                    .id("return")
+                    .workerSelector(new WorkerSelector(List.of("gpu"), WorkerQueueFallback.WAIT))
+                    .build()
+            )
+            .taskRun(TaskRun.builder().build())
+            .build();
+        WorkerQueueService service = configuredServiceWithMetaStore(
+            new StaticWorkerQueueMetaStore(List.of("gce-a", "gce-b"), Set.of())
+        );
+
+        // When
+        Optional<WorkerQueueRouting> result = service.resolveWorkerQueueForJob(buildFlow(), workerTask);
+
+        // Then
+        assertThat(result).isPresent();
+        assertThat(result.get().workerQueueId()).isEqualTo("gce-a");
+        assertThat(result.get().fallback()).isEqualTo(WorkerQueueFallback.WAIT);
+        assertThat(result.get().disposition()).isEqualTo(WorkerQueueRouting.Disposition.WAIT_AND_DISPATCH);
+    }
+
+    @Test
     void shouldLetTaskSelectorOverrideFlowSelector() throws NoMatchingWorkerQueueException {
         FlowInterface flow = Flow.builder()
             .id("flow")
@@ -286,6 +340,11 @@ class WorkerQueueServiceTest {
         return new ConfiguredWorkerQueueService(new ConfiguredWorkerQueueMetaStore(config), config);
     }
 
+    private WorkerQueueService configuredServiceWithMetaStore(WorkerQueueMetaStore metaStore) {
+        WorkerRoutingConfiguration config = config();
+        return new ConfiguredWorkerQueueService(metaStore, config);
+    }
+
     private WorkerRoutingConfiguration config() {
         return new WorkerRoutingConfiguration(
             null,
@@ -298,5 +357,22 @@ class WorkerQueueServiceTest {
                 "gce-b", new WorkerRoutingConfiguration.WorkerQueue(List.of("cpu", "batch", "gce-b"), List.of())
             )
         );
+    }
+
+    private record StaticWorkerQueueMetaStore(List<String> matchingQueueIds, Set<String> activeQueueIds) implements WorkerQueueMetaStore {
+        @Override
+        public boolean hasActiveWorkerForQueue(String id) {
+            return activeQueueIds.contains(id);
+        }
+
+        @Override
+        public Set<String> listAllWorkerQueueIds() {
+            return Set.copyOf(matchingQueueIds);
+        }
+
+        @Override
+        public List<String> resolveQueueIdsByTags(Set<String> requiredTags, String tenant, WorkerSelectorMatch match) {
+            return matchingQueueIds;
+        }
     }
 }

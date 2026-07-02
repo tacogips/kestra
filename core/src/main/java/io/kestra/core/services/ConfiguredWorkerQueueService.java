@@ -56,12 +56,15 @@ public class ConfiguredWorkerQueueService extends WorkerQueueService.Default {
             throw new NoMatchingWorkerQueueException(requiredTags, flow.getTenantId(), source(workerJob));
         }
 
-        String queueId = queueIds.getFirst();
-        WorkerQueueFallback fallback = selector.fallback() == null ? WorkerQueueFallback.FAIL : selector.fallback();
-        if (workerQueueMetaStore.hasActiveWorkerForQueue(queueId)) {
-            return Optional.of(new WorkerQueueRouting(queueId, selector.tags(), null, WorkerQueueRouting.Disposition.DISPATCH));
+        Optional<String> availableQueueId = queueIds.stream()
+            .filter(workerQueueMetaStore::hasActiveWorkerForQueue)
+            .findFirst();
+        if (availableQueueId.isPresent()) {
+            return Optional.of(new WorkerQueueRouting(availableQueueId.get(), selector.tags(), null, WorkerQueueRouting.Disposition.DISPATCH));
         }
 
+        String queueId = queueIds.getFirst();
+        WorkerQueueFallback fallback = selector.fallback() == null ? WorkerQueueFallback.FAIL : selector.fallback();
         return switch (fallback) {
             case WAIT -> Optional.of(new WorkerQueueRouting(queueId, selector.tags(), fallback, WorkerQueueRouting.Disposition.WAIT_AND_DISPATCH));
             case CANCEL -> Optional.of(new WorkerQueueRouting(queueId, selector.tags(), fallback, WorkerQueueRouting.Disposition.CANCEL));
