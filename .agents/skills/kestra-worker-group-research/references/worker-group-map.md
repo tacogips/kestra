@@ -125,6 +125,28 @@ Important: the worker does not decide task eligibility by inspecting tags. It ad
 
 System tasks bypass this path and route to the `system` queue.
 
+## Broadcast Dispatch
+
+Runnable tasks routed to a configured Worker Queue use broadcast dispatch by default. A
+task-level `workerSelector` runs the task on every worker currently subscribed to the matched
+Worker Queue unless it sets `broadcast: false`. The default and system queues, triggers,
+`WorkingDirectory` tasks, and per-worker copies are never broadcast. Mechanics:
+
+- `WorkerJobDispatcher.handleBroadcastFanOut` snapshots the queue's workers and re-emits one
+  pinned per-worker copy (fresh task run id + `TaskRunBroadcast(originTaskRunId, targetWorkerId)`
+  marker on `TaskRun`).
+- `WorkerJobDispatcher.handleBroadcastCopyJob` dispatches each copy only to its pinned worker;
+  a missing target fails the copy.
+- `BroadcastTaskCoordinator` (worker-controller) aggregates copy results into a single result
+  for the original task run (worst state wins; outputs merged per worker id); it also remaps
+  copy logs/metrics to the original task run via `GrpcWorkerControllerService`.
+- The executor is untouched: it emits the job once and sees one task run.
+- Aggregation state is controller-local; broadcast requires one worker-controller. Losing that
+  state fails the original task because a successful aggregate can no longer be proven. Active
+  state is retained for the full task lifetime; acknowledged completed state is retained for 24
+  hours to suppress late duplicates. See
+  `docs/architecture/OSS_WORKER_ROUTING.md` section "Broadcast Dispatch".
+
 ## Tag Matching Rules
 
 `ConfiguredWorkerQueueMetaStore.resolveQueueIdsByTags()`:

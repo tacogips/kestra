@@ -284,13 +284,22 @@ the stream's `StreamObserver.onNext(...)`. If no subscribed worker has capacity,
 the dispatcher pauses that Worker Queue subscription and requeues the event so
 backpressure stays on the controller side.
 
-Worker Queue matching is not a broadcast mechanism. If a `workerSelector.tags`
-set matches multiple Worker Queue definitions, the resolver orders the matching
-queues and selects exactly one Worker Queue id for that `WorkerJob`: the first
-statically active candidate, or the best-ranked candidate when fallback must be
-applied. The executor emits the job once, using that single queue key. This
-avoids running the same `TaskRun` on multiple workers and keeps task results,
-retries, kill handling, and external side effects single-dispatch.
+Worker Queue matching selects exactly one Worker Queue per job. If a
+`workerSelector.tags` set matches multiple Worker Queue definitions, the
+resolver orders the matching queues and selects one Worker Queue id for that
+`WorkerJob`: the first statically active candidate, or the best-ranked candidate
+when fallback must be applied. The executor emits the job once, using that
+single queue key.
+
+Within the selected Worker Queue, runnable tasks use broadcast dispatch by
+default: the worker-controller dispatches each task simultaneously to every
+worker currently subscribed to that queue, and the task run completes once all
+of them finished. Set `workerSelector.broadcast: false` for classic
+single-worker dispatch. The default and system queues are always
+single-dispatch. Broadcast aggregation currently requires a single
+worker-controller. See
+[Broadcast dispatch](docs/architecture/OSS_WORKER_ROUTING.md#broadcast-dispatch)
+for the semantics and limitations.
 
 ### Worker groups, Worker Queues, and worker configuration
 

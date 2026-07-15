@@ -28,6 +28,7 @@ import io.kestra.core.executor.WorkerJobRunningStateStore;
 import io.kestra.core.metrics.MetricRegistry;
 import io.kestra.core.models.executions.ExecutionKilled;
 import io.kestra.core.models.executions.TaskRun;
+import io.kestra.core.models.flows.State;
 import io.kestra.core.queues.BroadcastQueueInterface;
 import io.kestra.core.queues.DispatchQueueInterface;
 import io.kestra.core.queues.KeyedDispatchQueueInterface;
@@ -159,14 +160,14 @@ class WorkerJobDispatcherTest {
     private WorkerJobDispatcher buildDispatcher(List<WorkerLifecycleListener> listeners) {
         return new WorkerJobDispatcher(
             mockQueue, mockStateStore, mockKillQueue, mockClusterEventQueue, mockResultQueue, mockTriggerEventQueue, mockMetricRegistry, mock(MetadataChangeListener.class),
-            new WorkerQueueResolver.Default(), new WorkerRoutingConfiguration(null, Map.of(), Map.of()), listeners
+            new WorkerQueueResolver.Default(), new BroadcastTaskCoordinator(), new WorkerRoutingConfiguration(null, Map.of(), Map.of()), listeners
         );
     }
 
     private WorkerJobDispatcher buildDispatcher(MetricRegistry metricRegistry, WorkerRoutingConfiguration workerRoutingConfiguration) {
         return new WorkerJobDispatcher(
             mockQueue, mockStateStore, mockKillQueue, mockClusterEventQueue, mockResultQueue, mockTriggerEventQueue, metricRegistry, mock(MetadataChangeListener.class),
-            new WorkerQueueResolver.Default(), workerRoutingConfiguration, List.of()
+            new WorkerQueueResolver.Default(), new BroadcastTaskCoordinator(), workerRoutingConfiguration, List.of()
         );
     }
 
@@ -1880,6 +1881,211 @@ class WorkerJobDispatcherTest {
         // Then — each worker's underlying StreamObserver should have received an onNext
         verify(obsA).onNext(any(WorkerJobResponse.class));
         verify(obsB).onNext(any(WorkerJobResponse.class));
+    }
+
+    @Test
+    @DisplayName("a broadcast task is fanned out into one pinned copy per worker of the Worker Queue")
+    void shouldFanOutBroadcastTaskToAllWorkersOfWorkerQueue() throws QueueException {
+        // Given
+        WorkerStreamContext<WorkerJobResponse> context1 = createWorkerContext("worker-1", WORKER_GROUP_A, 10);
+        WorkerStreamContext<WorkerJobResponse> context2 = createWorkerContext("worker-2", WORKER_GROUP_A, 10);
+        context1.addPermits(5);
+        context2.addPermits(5);
+        dispatcher.registerWorker(context1);
+        dispatcher.registerWorker(context2);
+
+        io.kestra.core.runners.WorkerTask broadcastTask = createBroadcastWorkerTask();
+        String originId = broadcastTask.getTaskRun().getId();
+        MockQueueSubscriber subscriber = getSubscriberForGroup(WORKER_GROUP_A);
+
+        // When
+        subscriber.deliverJob(new WorkerJobEvent(WORKER_GROUP_A, broadcastTask));
+
+        // Then - one pinned copy per worker was re-emitted to the same Worker Queue
+        org.mockito.ArgumentCaptor<WorkerJobEvent> captor = org.mockito.ArgumentCaptor.forClass(WorkerJobEvent.class);
+        verify(mockQueue, times(2)).emit(eq(WORKER_GROUP_A), captor.capture());
+        List<WorkerJobEvent> copies = captor.getAllValues();
+        assertThat(copies)
+            .extracting(e -> ((WorkerTask) e.job()).getTaskRun().getBroadcast().targetWorkerId())
+            .containsExactlyInAnyOrder("worker-1", "worker-2");
+        assertThat(copies).allSatisfy(e ->
+        {
+            TaskRun copyTaskRun = ((WorkerTask) e.job()).getTaskRun();
+            assertThat(copyTaskRun.getBroadcast().originTaskRunId()).isEqualTo(originId);
+            assertThat(copyTaskRun.getId()).isNotEqualTo(originId);
+        });
+
+        // The original job itself is neither persisted nor dispatched to any worker
+        verify(mockStateStore, never()).save(any(), any());
+        verify(context1.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+        verify(context2.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+    }
+
+    @Test
+    @DisplayName("a task with broadcast disabled is dispatched to a single worker of the Worker Queue")
+    void shouldSingleDispatchWhenBroadcastIsDisabled() throws QueueException {
+        // Given
+        WorkerStreamContext<WorkerJobResponse> context1 = createWorkerContext("worker-1", WORKER_GROUP_A, 10);
+        WorkerStreamContext<WorkerJobResponse> context2 = createWorkerContext("worker-2", WORKER_GROUP_A, 10);
+        context1.addPermits(5);
+        context2.addPermits(5);
+        dispatcher.registerWorker(context1);
+        dispatcher.registerWorker(context2);
+
+        io.kestra.core.runners.WorkerTask singleDispatchTask = createRealWorkerTask(
+            new io.kestra.core.models.tasks.WorkerSelector(List.of("batch"), null, null, false), null
+        );
+        MockQueueSubscriber subscriber = getSubscriberForGroup(WORKER_GROUP_A);
+
+        // When
+        subscriber.deliverJob(new WorkerJobEvent(WORKER_GROUP_A, singleDispatchTask));
+
+        // Then - classic single-worker dispatch: no fan-out, exactly one worker got the job
+        verify(mockQueue, never()).emit(anyString(), any(WorkerJobEvent.class));
+        verify(mockStateStore).save(any(), any());
+        assertThat(context1.getInFlightCount() + context2.getInFlightCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a broadcast copy is dispatched only to the worker it is pinned to")
+    void shouldDispatchBroadcastCopyOnlyToPinnedTargetWorker() {
+        // Given
+        WorkerStreamContext<WorkerJobResponse> context1 = createWorkerContext("worker-1", WORKER_GROUP_A, 10);
+        WorkerStreamContext<WorkerJobResponse> context2 = createWorkerContext("worker-2", WORKER_GROUP_A, 10);
+        context1.addPermits(5);
+        context2.addPermits(5);
+        dispatcher.registerWorker(context1);
+        dispatcher.registerWorker(context2);
+
+        // worker-1 is the least loaded, but the copy is pinned to worker-2
+        io.kestra.core.runners.WorkerTask copy = createBroadcastCopyWorkerTask("origin-task-run", "worker-2");
+        MockQueueSubscriber subscriber = getSubscriberForGroup(WORKER_GROUP_A);
+
+        // When
+        subscriber.deliverJob(new WorkerJobEvent(WORKER_GROUP_A, copy));
+
+        // Then
+        verify(mockStateStore).save(any(), any());
+        verify(context2.getResponseObserver()).onNext(any(WorkerJobResponse.class));
+        verify(context1.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+        assertThat(context2.getInFlightCount()).isEqualTo(1);
+        assertThat(context1.getInFlightCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("a broadcast copy whose target worker is gone is failed and mapped to the original task run")
+    void shouldFailBroadcastCopyWhenTargetWorkerIsGone() throws QueueException {
+        // Given
+        WorkerStreamContext<WorkerJobResponse> context1 = createWorkerContext("worker-1", WORKER_GROUP_A, 10);
+        context1.addPermits(5);
+        dispatcher.registerWorker(context1);
+
+        io.kestra.core.runners.WorkerTask copy = createBroadcastCopyWorkerTask("origin-task-run", "worker-gone");
+        MockQueueSubscriber subscriber = getSubscriberForGroup(WORKER_GROUP_A);
+
+        // When
+        subscriber.deliverJob(new WorkerJobEvent(WORKER_GROUP_A, copy));
+
+        // Then - a FAILED result mapped back to the original task run id is emitted
+        org.mockito.ArgumentCaptor<WorkerTaskResult> captor = org.mockito.ArgumentCaptor.forClass(WorkerTaskResult.class);
+        verify(mockResultQueue).emit(captor.capture());
+        assertThat(captor.getValue().getTaskRun().getId()).isEqualTo("origin-task-run");
+        assertThat(captor.getValue().getTaskRun().getBroadcast()).isNull();
+        assertThat(captor.getValue().getTaskRun().getState().getCurrent()).isEqualTo(io.kestra.core.models.flows.State.Type.FAILED);
+        verify(context1.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+    }
+
+    @Test
+    @DisplayName("a dispatcher-generated broadcast result is retried durably when result emission fails")
+    void shouldRetryUndeliverableBroadcastResultWhenResultQueueFails() throws QueueException {
+        // Given
+        WorkerStreamContext<WorkerJobResponse> context = createWorkerContext("worker-1", WORKER_GROUP_A, 10);
+        context.addPermits(5);
+        dispatcher.registerWorker(context);
+        WorkerTask copy = createBroadcastCopyWorkerTask("origin-task-run", "worker-gone");
+        MockQueueSubscriber subscriber = getSubscriberForGroup(WORKER_GROUP_A);
+        doThrow(new QueueException("result queue unavailable"))
+            .doNothing()
+            .when(mockResultQueue).emit(any(WorkerTaskResult.class));
+
+        // When - the first attempt fails and re-queues a terminal copy retry envelope.
+        subscriber.deliverJob(new WorkerJobEvent(WORKER_GROUP_A, copy));
+        org.mockito.ArgumentCaptor<WorkerJobEvent> retryCaptor = org.mockito.ArgumentCaptor.forClass(WorkerJobEvent.class);
+        verify(mockQueue).emit(eq(WORKER_GROUP_A), retryCaptor.capture());
+        WorkerJobEvent retryEvent = retryCaptor.getValue();
+        WorkerTask retryCopy = (WorkerTask) retryEvent.job();
+        subscriber.deliverJob(retryEvent);
+
+        // Then - redelivery emits the original FAILED result without dispatching the copy.
+        assertThat(retryCopy.getTaskRun().getState().isTerminated()).isTrue();
+        org.mockito.ArgumentCaptor<WorkerTaskResult> resultCaptor = org.mockito.ArgumentCaptor.forClass(WorkerTaskResult.class);
+        verify(mockResultQueue, times(2)).emit(resultCaptor.capture());
+        assertThat(resultCaptor.getAllValues().getLast().getTaskRun().getId()).isEqualTo("origin-task-run");
+        assertThat(resultCaptor.getAllValues().getLast().getTaskRun().getState().getCurrent()).isEqualTo(State.Type.FAILED);
+        verify(context.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+    }
+
+    @Test
+    @DisplayName("a broadcast copy whose target worker has no capacity is re-queued and the subscription paused")
+    void shouldRequeueBroadcastCopyWhenTargetWorkerHasNoCapacity() throws QueueException {
+        // Given - the pinned target has no permits while another worker is idle
+        WorkerStreamContext<WorkerJobResponse> target = createWorkerContext("worker-1", WORKER_GROUP_A, 10);
+        WorkerStreamContext<WorkerJobResponse> other = createWorkerContext("worker-2", WORKER_GROUP_A, 10);
+        other.addPermits(5);
+        dispatcher.registerWorker(target);
+        dispatcher.registerWorker(other);
+
+        io.kestra.core.runners.WorkerTask copy = createBroadcastCopyWorkerTask("origin-task-run", "worker-1");
+        MockQueueSubscriber subscriber = getSubscriberForGroup(WORKER_GROUP_A);
+        WorkerJobEvent event = new WorkerJobEvent(WORKER_GROUP_A, copy);
+
+        // When
+        subscriber.deliverJob(event);
+
+        // Then
+        verify(mockQueue).emit(eq(WORKER_GROUP_A), eq(event));
+        assertThat(subscriber.isPaused.get()).isTrue();
+        verify(target.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+        verify(other.getResponseObserver(), never()).onNext(any(WorkerJobResponse.class));
+    }
+
+    private io.kestra.core.runners.WorkerTask createBroadcastWorkerTask() {
+        return createRealWorkerTask(new io.kestra.core.models.tasks.WorkerSelector(List.of("batch"), null), null);
+    }
+
+    private io.kestra.core.runners.WorkerTask createBroadcastCopyWorkerTask(String originTaskRunId, String targetWorkerId) {
+        return createRealWorkerTask(
+            new io.kestra.core.models.tasks.WorkerSelector(List.of("batch"), null, null, true),
+            new io.kestra.core.models.executions.TaskRunBroadcast(originTaskRunId, targetWorkerId)
+        );
+    }
+
+    private io.kestra.core.runners.WorkerTask createRealWorkerTask(
+        io.kestra.core.models.tasks.WorkerSelector workerSelector,
+        io.kestra.core.models.executions.TaskRunBroadcast broadcast) {
+        io.kestra.plugin.core.debug.Return task = io.kestra.plugin.core.debug.Return.builder()
+            .id("broadcast-task")
+            .type(io.kestra.plugin.core.debug.Return.class.getName())
+            .workerSelector(workerSelector)
+            .build();
+        return io.kestra.core.runners.WorkerTask.builder()
+            .taskRun(createRealTaskRun(task.getId(), broadcast))
+            .task(task)
+            .data(new io.kestra.core.runners.WorkerTaskData(Map.of(), List.of(), null))
+            .build();
+    }
+
+    private TaskRun createRealTaskRun(String taskId, io.kestra.core.models.executions.TaskRunBroadcast broadcast) {
+        return TaskRun.builder()
+            .tenantId("tenant")
+            .id(io.kestra.core.utils.IdUtils.create())
+            .executionId(io.kestra.core.utils.IdUtils.create())
+            .namespace("io.kestra.tests")
+            .flowId("broadcast-flow")
+            .taskId(taskId)
+            .state(new io.kestra.core.models.flows.State())
+            .broadcast(broadcast)
+            .build();
     }
 
 }

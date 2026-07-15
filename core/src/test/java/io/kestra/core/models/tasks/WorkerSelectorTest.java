@@ -23,7 +23,8 @@ class WorkerSelectorTest {
                 WorkerQueueFallback.FAIL,
                 WorkerQueueFallback.WAIT,
                 WorkerQueueFallback.CANCEL,
-                WorkerQueueFallback.IGNORE);
+                WorkerQueueFallback.IGNORE
+            );
     }
 
     @Test
@@ -68,6 +69,47 @@ class WorkerSelectorTest {
 
             WorkerSelector emptyTags = new WorkerSelector(List.of(), WorkerSelectorMatch.ANY, null);
             WorkerSelector nullTags = new WorkerSelector(null, WorkerSelectorMatch.ANY, null);
+
+            assertThat(validator.validate(emptyTags)).isNotEmpty();
+            assertThat(validator.validate(nullTags)).isNotEmpty();
+        }
+    }
+
+    @Test
+    void shouldExposeBroadcastField() {
+        WorkerSelector broadcast = new WorkerSelector(List.of("batch"), null, null, true);
+        WorkerSelector single = new WorkerSelector(List.of("batch"), null, null, false);
+        WorkerSelector unspecified = new WorkerSelector(List.of("batch"), null);
+
+        assertThat(broadcast.broadcast()).isTrue();
+        assertThat(broadcast.isBroadcastEnabled()).isTrue();
+        assertThat(single.broadcast()).isFalse();
+        assertThat(single.isBroadcastEnabled()).isFalse();
+        // An omitted value uses the default broadcast behavior.
+        assertThat(unspecified.broadcast()).isNull();
+        assertThat(unspecified.isBroadcastEnabled()).isTrue();
+    }
+
+    @Test
+    void shouldAcceptBroadcastWithTags() {
+        try (jakarta.validation.ValidatorFactory factory = validatorFactory()) {
+            jakarta.validation.Validator validator = factory.getValidator();
+
+            WorkerSelector broadcast = new WorkerSelector(List.of("batch"), null, null, true);
+            WorkerSelector single = new WorkerSelector(List.of("batch"), null, null, false);
+
+            assertThat(validator.validate(broadcast)).isEmpty();
+            assertThat(validator.validate(single)).isEmpty();
+        }
+    }
+
+    @Test
+    void shouldRejectBroadcastWithoutTags() {
+        try (jakarta.validation.ValidatorFactory factory = validatorFactory()) {
+            jakarta.validation.Validator validator = factory.getValidator();
+
+            WorkerSelector emptyTags = new WorkerSelector(List.of(), null, null, false);
+            WorkerSelector nullTags = new WorkerSelector(null, null, null, false);
 
             assertThat(validator.validate(emptyTags)).isNotEmpty();
             assertThat(validator.validate(nullTags)).isNotEmpty();
