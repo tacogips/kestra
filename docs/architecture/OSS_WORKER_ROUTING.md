@@ -218,6 +218,83 @@ That means `fallback` does not detect configured-but-unserved compact-mode
 queues; the job is dispatched to the selected worker queue and remains queued
 until a worker whose group subscribes to that queue connects.
 
+## Broadcast Dispatch
+
+Runnable tasks routed to a configured Worker Queue use **broadcast** dispatch by
+default, running simultaneously on **every** worker currently subscribed to
+that Worker Queue.
+The flow author does not need to know or care which — or how many — machines
+serve the queue; workers subscribe on their own (via their `workerGroupId`), and
+whatever subscribed executes the task:
+
+```yaml
+tasks:
+  - id: batch1
+    type: io.kestra.plugin.scripts.shell.Commands
+    workerSelector:
+      tags: [batchgroup1]
+    commands:
+      - ./run-batch-on-every-machine.sh
+```
+
+With a worker group `BatchGroup1` mapped to the `batchgroup1` Worker Queue and
+three connected worker machines, `batch1` runs on all three machines at the
+same time.
+
+A task that must run on exactly one machine of the queue explicitly disables
+broadcast:
+
+```yaml
+    workerSelector:
+      tags: [batchgroup1]
+      broadcast: false
+```
+
+The default Worker Queue (no selector tags) and the system queue are always
+single-dispatch; broadcast never applies to them, to triggers, or to
+`WorkingDirectory` tasks.
+
+Semantics:
+
+- The executor is unchanged: it emits the job once, and the execution still
+  contains a single task run for the task.
+- The worker-controller — the only component that knows which workers are
+  connected — fans the job out into one per-worker copy. Each copy has a fresh
+  task run id, is pinned to its target worker, and carries a marker
+  (`TaskRunBroadcast`) linking it back to the original task run.
+- Every copy keeps the regular durability guarantees: it travels through the
+  keyed `WorkerJobEvent` queue and is persisted to the running-state store
+  before it is sent to its worker.
+- The controller aggregates copy results (`BroadcastTaskCoordinator`): the
+  first RUNNING transition is forwarded so the execution shows progress, and a
+  single terminal result is emitted once **all** copies finished. The worst
+  copy state wins (`FAILED` over `KILLED` over `WARNING` over `SUCCESS`), so
+  the task fails if any machine fails.
+- Task outputs are merged into a map keyed by worker id
+  (`outputs.<taskId>.<workerId>...`).
+- Worker logs and metrics of every copy are remapped to the original task run,
+  so all machines' logs appear under the one task run visible in the UI.
+- The set of target workers is snapshotted when the controller consumes the
+  job: workers joining afterwards do not receive the task; a pinned worker
+  that disconnects before its copy is dispatched fails that copy (and thus the
+  task).
+- Killing the execution kills every copy through the normal kill broadcast.
+
+Limitations:
+
+- The broadcast default is only honored on a **task-level** `workerSelector`;
+  triggers and `WorkingDirectory` tasks are always single-dispatch regardless.
+- An explicit `broadcast` value requires `tags` (validated), so the target
+  Worker Queue is always explicit when setting it.
+- Fan-out membership and result aggregation are local to one worker-controller
+  instance. Run a single worker-controller when using broadcast dispatch; a
+  multi-controller deployment is unsupported for broadcast tasks. If
+  aggregation state is lost (for example, by a controller restart), the next
+  terminal copy result fails the original task because successful aggregation
+  can no longer be proven. Active aggregation and copy-id mappings are retained
+  for the full task lifetime; completed state is retained for 24 hours to reject
+  late duplicate delivery.
+
 ## Local And Staging
 
 Local and staging can still run as a single-node or GKE-only environment by
