@@ -161,6 +161,7 @@ public class WorkerJobDispatcher {
     private final MetadataChangeListener metadataChangeListener;
 
     private final WorkerQueueResolver workerQueueResolver;
+    private final BroadcastTaskCoordinator broadcastTaskCoordinator;
     private final Set<String> staticWorkerQueueIds;
     private final Set<String> registeredWorkerQueueGauges = ConcurrentHashMap.newKeySet();
 
@@ -181,6 +182,7 @@ public class WorkerJobDispatcher {
         MetricRegistry metricRegistry,
         MetadataChangeListener metadataChangeListener,
         WorkerQueueResolver workerQueueResolver,
+        BroadcastTaskCoordinator broadcastTaskCoordinator,
         WorkerRoutingConfiguration workerRoutingConfiguration,
         List<WorkerLifecycleListener> lifecycleListeners) {
         this.workerJobEventQueue = workerJobEventQueue;
@@ -190,6 +192,7 @@ public class WorkerJobDispatcher {
         this.metricRegistry = metricRegistry;
         this.metadataChangeListener = metadataChangeListener;
         this.workerQueueResolver = workerQueueResolver;
+        this.broadcastTaskCoordinator = broadcastTaskCoordinator;
         this.staticWorkerQueueIds = workerRoutingConfiguration == null
             ? Set.of()
             : workerRoutingConfiguration.configuredWorkerQueueIds().stream()
@@ -759,11 +762,22 @@ public class WorkerJobDispatcher {
                     MetricRegistry.METRIC_CONTROLLER_JOB_KILLED_TOTAL_DESCRIPTION,
                     metricRegistry.workerQueueTags(workerQueueId)
                 ).increment();
-                try {
-                    workerTaskResultQueue.emit(new WorkerTaskResult(workerTask.getTaskRun().withState(State.Type.KILLED)));
-                } catch (QueueException e) {
-                    log.error("Failed to emit KILLED result for task '{}': {}", job.uid(), e.getMessage(), e);
-                }
+                TaskRun killedTaskRun = workerTask.getTaskRun().withState(State.Type.KILLED);
+                WorkerJobEvent retryEvent = workerTask.getTaskRun().getBroadcast() == null
+                    ? null
+                    : WorkerJobEvent.of(workerTask.withTaskRun(killedTaskRun), event.workerQueueId());
+                emitWorkerTaskResult(new WorkerTaskResult(killedTaskRun), retryEvent);
+                return;
+            }
+
+            // Broadcast handling: a per-worker copy is pinned to its target worker; an original
+            // broadcast task is fanned out into one pinned copy per worker of the Worker Queue.
+            if (workerTask.getTaskRun().getBroadcast() != null) {
+                handleBroadcastCopyJob(workerQueueId, event, workerTask);
+                return;
+            }
+            if (broadcastTaskCoordinator.isBroadcastTask(workerTask, workerQueueId)) {
+                handleBroadcastFanOut(workerQueueId, event, workerTask);
                 return;
             }
         }
@@ -804,6 +818,166 @@ public class WorkerJobDispatcher {
         }
     }
 
+    /**
+     * Fans an original broadcast task out into one pinned copy per worker currently registered
+     * for the Worker Queue. The copies are re-emitted to the same Worker Queue and dispatched
+     * individually by {@link #handleBroadcastCopyJob}, so each copy keeps the durable
+     * queue/state-store guarantees of a regular job.
+     */
+    private void handleBroadcastFanOut(String workerQueueId, WorkerJobEvent event, WorkerTask workerTask) {
+        WorkerQueueState state = workerQueueStates.get(workerQueueId);
+        if (state == null) {
+            log.error("No state for Worker Queue '{}', re-queuing broadcast job {}", WorkerQueues.forLog(workerQueueId), workerTask.uid());
+            requeue(event);
+            return;
+        }
+
+        state.lock.lock();
+        try {
+            List<String> workerIds = getWorkersInWorkerQueue(workerQueueId)
+                .map(WorkerStreamContext::getWorkerId)
+                .sorted()
+                .toList();
+            if (workerIds.isEmpty()) {
+                // Same handling as no capacity: wait for workers to (re)connect.
+                pauseSubscription(state, workerQueueId);
+                log.debug("No workers for broadcast task '{}' in Worker Queue '{}', re-queuing", workerTask.uid(), WorkerQueues.forLog(workerQueueId));
+                requeue(event);
+                return;
+            }
+
+            List<WorkerTask> copies = broadcastTaskCoordinator.fanOut(workerTask, workerIds);
+            if (copies.isEmpty()) {
+                // Duplicate delivery of an already fanned-out job: drop it.
+                return;
+            }
+
+            log.info(
+                "Broadcasting task '{}' to {} worker(s) of Worker Queue '{}'",
+                workerTask.uid(), copies.size(), WorkerQueues.forLog(workerQueueId)
+            );
+            for (WorkerTask copy : copies) {
+                try {
+                    workerJobEventQueue.emit(event.key(), WorkerJobEvent.of(copy, event.workerQueueId()));
+                } catch (QueueException e) {
+                    log.error(
+                        "Failed to emit broadcast copy '{}' for task '{}': {}",
+                        copy.uid(), workerTask.uid(), e.getMessage(), e
+                    );
+                    emitUndeliverableBroadcastCopy(copy, event.workerQueueId());
+                }
+            }
+        } finally {
+            state.lock.unlock();
+        }
+    }
+
+    /**
+     * Dispatches a broadcast per-worker copy to the specific worker it is pinned to. If the
+     * target worker is no longer registered for the Worker Queue, the copy is failed (which may
+     * complete the broadcast aggregation). If the target has no capacity, the job is re-queued
+     * and the subscription paused until the next permit update.
+     */
+    private void handleBroadcastCopyJob(String workerQueueId, WorkerJobEvent event, WorkerTask workerTask) {
+        if (workerTask.getTaskRun().getState().isTerminated()) {
+            // Dispatcher-generated terminal copies are durable retry envelopes for aggregate
+            // result emission. They must never be executed by a worker again.
+            emitWorkerTaskResult(new WorkerTaskResult(workerTask.getTaskRun()), event);
+            return;
+        }
+
+        String targetWorkerId = workerTask.getTaskRun().getBroadcast().targetWorkerId();
+
+        WorkerQueueState state = workerQueueStates.get(workerQueueId);
+        if (state == null) {
+            log.error("No state for Worker Queue '{}', re-queuing broadcast copy {}", WorkerQueues.forLog(workerQueueId), workerTask.uid());
+            requeue(event);
+            return;
+        }
+
+        state.lock.lock();
+        try {
+            WorkerStreamContext<WorkerJobResponse> context = activeStreams.get(targetWorkerId);
+            Set<String> queueWorkers = workerIdsByWorkerQueue.get(workerQueueId);
+            if (context == null || queueWorkers == null || !queueWorkers.contains(targetWorkerId)) {
+                log.warn(
+                    "Target worker '{}' of broadcast copy '{}' is no longer registered for Worker Queue '{}': failing the copy",
+                    targetWorkerId, workerTask.uid(), WorkerQueues.forLog(workerQueueId)
+                );
+                emitUndeliverableBroadcastCopy(workerTask, event.workerQueueId());
+                return;
+            }
+
+            String bucket = null;
+            if (context.getAvailablePermits() > 0 && context.hasCapacityForQueue(workerQueueId) && context.tryConsumePermit()) {
+                bucket = context.tryReserveBucket(workerQueueId);
+                if (bucket == null) {
+                    context.addPermits(1);
+                }
+            }
+            if (bucket == null) {
+                // Target worker exists but has no capacity right now. Pause and re-queue; the
+                // next permit update on this Worker Queue resumes the subscription and retries.
+                pauseSubscription(state, workerQueueId);
+                log.debug(
+                    "Target worker '{}' has no capacity for broadcast copy '{}', re-queuing",
+                    targetWorkerId, workerTask.uid()
+                );
+                requeue(event);
+                return;
+            }
+
+            dispatchJobToWorker(context, workerTask, event, workerQueueId, bucket);
+
+            if (!hasAnyPermitsInWorkerQueue(workerQueueId)) {
+                pauseSubscription(state, workerQueueId);
+            }
+        } finally {
+            state.lock.unlock();
+        }
+    }
+
+    /**
+     * Records an undeliverable broadcast copy and supplies a terminal copy event that can retry
+     * aggregate result emission durably without executing the task.
+     */
+    private void emitUndeliverableBroadcastCopy(WorkerTask copy, String workerQueueId) {
+        WorkerTask failedCopy = copy.withTaskRun(copy.getTaskRun().fail());
+        emitWorkerTaskResult(
+            new WorkerTaskResult(failedCopy.getTaskRun()),
+            WorkerJobEvent.of(failedCopy, workerQueueId)
+        );
+    }
+
+    /**
+     * Emits a worker task result produced by the dispatcher itself, first routing it through the
+     * broadcast coordinator so results carrying a broadcast marker are aggregated (or mapped back
+     * to their original task run) instead of leaking per-copy task run ids to the executor.
+     */
+    private void emitWorkerTaskResult(WorkerTaskResult result) {
+        emitWorkerTaskResult(result, null);
+    }
+
+    /**
+     * Emits a dispatcher-generated result and optionally re-queues a terminal broadcast copy as
+     * a durable retry envelope when the result queue is temporarily unavailable.
+     */
+    private void emitWorkerTaskResult(WorkerTaskResult result, @Nullable WorkerJobEvent retryEvent) {
+        broadcastTaskCoordinator.onResult(result).ifPresent(toEmit ->
+        {
+            try {
+                workerTaskResultQueue.emit(toEmit);
+                broadcastTaskCoordinator.acknowledgeResultEmission(toEmit);
+            } catch (QueueException e) {
+                broadcastTaskCoordinator.releaseResultEmission(toEmit);
+                log.error("Failed to emit result for task run '{}': {}", toEmit.getTaskRun().getId(), e.getMessage(), e);
+                if (retryEvent != null) {
+                    requeue(retryEvent);
+                }
+            }
+        });
+    }
+
     private void handleDeserializationError(DeserializationException deserializationException) {
         if (deserializationException.getRecord() != null) {
             try {
@@ -814,7 +988,7 @@ public class WorkerJobDispatcher {
                     if ("task".equals(type)) {
                         // try to deserialize the taskRun to fail it
                         var taskRun = MAPPER.treeToValue(job.get("taskRun"), TaskRun.class);
-                        this.workerTaskResultQueue.emit(new WorkerTaskResult(taskRun.fail()));
+                        emitWorkerTaskResult(new WorkerTaskResult(taskRun.fail()));
                     } else if ("trigger".equals(type)) {
                         // try to deserialize the triggerContext to fail it
                         var triggerContext = MAPPER.treeToValue(job.get("triggerContext"), TriggerContext.class);
@@ -824,7 +998,7 @@ public class WorkerJobDispatcher {
                         this.triggerEventQueue.send(workerTriggerResult);
                     }
                 }
-            } catch (IOException | QueueException e) {
+            } catch (IOException e) {
                 // ignore the message if we cannot do anything about it
                 log.error("Unexpected exception when trying to handle a deserialization error", e);
             }
@@ -1057,11 +1231,11 @@ public class WorkerJobDispatcher {
 
         // Fail the job cleanly so the execution reaches a terminal state.
         if (job instanceof WorkerTask workerTask) {
-            try {
-                workerTaskResultQueue.emit(new WorkerTaskResult(workerTask.getTaskRun().fail()));
-            } catch (QueueException e) {
-                log.error("Failed to emit FAILED result for oversized job {}: {}", job.uid(), e.getMessage(), e);
-            }
+            TaskRun failedTaskRun = workerTask.getTaskRun().fail();
+            WorkerJobEvent retryEvent = workerTask.getTaskRun().getBroadcast() == null
+                ? null
+                : WorkerJobEvent.of(workerTask.withTaskRun(failedTaskRun), dispatchWorkerQueueId);
+            emitWorkerTaskResult(new WorkerTaskResult(failedTaskRun), retryEvent);
         } else if (job instanceof WorkerTrigger workerTrigger) {
             triggerEventQueue.send(new TriggerEvaluated(workerTrigger.triggerId(), null));
         }
