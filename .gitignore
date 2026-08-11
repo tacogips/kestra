@@ -72,3 +72,4 @@ charts/kestra-starter/charts/
 .claude/settings.local.json
 .gstack/
 .direnv/
+mise.local.toml
