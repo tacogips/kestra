@@ -1,0 +1,40 @@
+min_version = "2026.8.3"
+
+[[hooks.enter]]
+shell = "bash"
+script = '''
+if command -v kinko >/dev/null 2>&1 && kinko hook --help >/dev/null 2>&1; then
+  eval "$(kinko --path "$MISE_PROJECT_ROOT" hook enter bash)"
+fi
+'''
+
+[[hooks.leave]]
+shell = "bash"
+script = '''
+if command -v kinko >/dev/null 2>&1 && kinko hook --help >/dev/null 2>&1; then
+  eval "$(kinko hook leave bash)"
+fi
+'''
+
+[tools]
+java = "25"
+node = "22"
+
+[env]
+NODE_OPTIONS = "--max-old-space-size=4096"
+
+[tasks.default]
+description = "List available tasks"
+run = "mise tasks ls"
+
+[tasks.build]
+description = "Build the Kestra monorepo with the Gradle wrapper"
+run = './gradlew build "$@"'
+
+[tasks.test]
+description = "Run the Kestra test suite"
+run = './gradlew test "$@"'
+
+[tasks.clean]
+description = "Clean Gradle build outputs"
+run = "./gradlew clean"
