@@ -49,3 +49,6 @@ if [ -n "$ui_staged_files" ]; then
       cd ui-ee && npx lint-staged
   fi
 fi
+
+echo "Running staged secret scan..."
+mise exec -- pre-commit run gitleaks --hook-stage pre-commit
