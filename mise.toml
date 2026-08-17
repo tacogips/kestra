@@ -17,8 +17,10 @@ fi
 '''
 
 [tools]
+gitleaks = "latest"
 java = "25"
 node = "22"
+pre-commit = "latest"
 
 [env]
 NODE_OPTIONS = "--max-old-space-size=4096"
@@ -38,3 +40,22 @@ run = './gradlew test "$@"'
 [tasks.clean]
 description = "Clean Gradle build outputs"
 run = "./gradlew clean"
+
+[tasks.install-git-hooks]
+description = "Install mise tools and the repository pre-commit hook"
+run = '''
+mise install
+
+hooks_path=$(git config --local --get core.hooksPath || true)
+if [ "$hooks_path" = ".git/hooks" ]; then
+  git config --local --unset-all core.hooksPath
+  hooks_path=""
+fi
+
+if [ -z "$hooks_path" ]; then
+  mise exec -- pre-commit install
+else
+  mise exec -- pre-commit validate-config .pre-commit-config.yaml
+  echo "Using existing custom Git hooks path: $hooks_path"
+fi
+'''
