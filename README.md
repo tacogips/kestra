@@ -301,6 +301,11 @@ worker-controller. See
 [Broadcast dispatch](docs/architecture/OSS_WORKER_ROUTING.md#broadcast-dispatch)
 for the semantics and limitations.
 
+See
+[OSS worker routing deployment patterns](docs/architecture/OSS_WORKER_ROUTING_DEPLOYMENT_PATTERNS.md)
+for Mermaid diagrams covering default, dedicated, redundant single-dispatch,
+broadcast, local multi-queue, and `tacogips/kestra-playground` configurations.
+
 ### Worker groups, Worker Queues, and worker configuration
 
 In this fork, Worker Groups and Worker Queues are separate concepts:
