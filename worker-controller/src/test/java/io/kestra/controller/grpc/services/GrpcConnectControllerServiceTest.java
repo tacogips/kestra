@@ -14,9 +14,11 @@ class GrpcConnectControllerServiceTest {
     void shouldUseRequestedWorkerGroup() {
         GrpcConnectControllerService service = new GrpcConnectControllerService(mock(WorkerConfigsProvider.class));
 
-        String result = service.resolveWorkerGroupId(ConnectRequest.newBuilder()
-            .setRequestedWorkerGroupId("gce-a")
-            .build());
+        String result = service.resolveWorkerGroupId(
+            ConnectRequest.newBuilder()
+                .setRequestedWorkerGroupId("gce-a")
+                .build()
+        );
 
         assertThat(result).isEqualTo("gce-a");
     }

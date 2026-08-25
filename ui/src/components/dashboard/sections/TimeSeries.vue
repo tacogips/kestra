@@ -1,6 +1,8 @@
 <template>
+    <KsSkeleton v-if="loading && !generated && !props.short" animated :rows="3" class="empty" />
+
     <div
-        v-if="generated?.total > 0"
+        v-else-if="generated?.total > 0"
         class="chart"
         :class="{short: props.short, execution: props.execution}"
     >
@@ -36,14 +38,14 @@
     import {use, graphic} from "echarts/core"
     import {BarChart, LineChart} from "echarts/charts"
     import {useBreakpoints, breakpointsElement} from "@vueuse/core"
-    import {KsEchart, TooltipType, cssVar, durationUtils} from "@kestra-io/design-system"
+    import {KsEchart, KsSkeleton, TooltipType, cssVar, durationUtils} from "@kestra-io/design-system"
 
     import {Chart, useChartGenerator} from "../composables/useDashboards"
     import {getConsistentHEXColor, useLegendToggle} from "../composables/charts"
     import {useChartDrillDown} from "../composables/chartDrillDown"
     import ChartLegend from "./ChartLegend.vue"
     import {getDateFormat, useTheme} from "../../../utils/utils"
-    import {FilterObject} from "../../../utils/filters"
+    import {QueryFilter} from "@kestra-io/kestra-sdk"
 
     use([BarChart, LineChart])
 
@@ -52,7 +54,7 @@
     const props = withDefaults(defineProps<{
         dashboardId?: string;
         chart: Chart;
-        filters?: FilterObject[];
+        filters?: QueryFilter[];
         showDefault?: boolean;
         short?: boolean;
         execution?: boolean;
@@ -113,8 +115,8 @@
 
     const shortAxisLabel = (value: string): string => {
         if (typeof value !== "string") return value
-        const [datePart, ...timeParts] = value.split(":")
-        if (timeParts.length) return timeParts.join(":")
+        const [datePart, timePart] = value.split(" ")
+        if (timePart) return timePart
         const segments = datePart.split("-")
         return segments.length === 3 ? segments.slice(1).join("-") : datePart
     }
@@ -324,8 +326,8 @@
 
         return {
             grid: isCompact
-                ? {top: 2, right: 2, bottom: 2, left: 2, containLabel: false}
-                : {left: 0, right: 0, bottom: "3%", top: "5%", containLabel: true},
+                ? {top: 2, right: 2, bottom: 2, left: 2, outerBoundsMode: "none"}
+                : {left: 0, right: 0, bottom: "3%", top: "5%", outerBoundsMode: "same"},
             xAxis: {
                 type: "category",
                 data: xAxisData,
@@ -343,7 +345,7 @@
         }
     })
 
-    const {data: generated, generate} = useChartGenerator(props.dashboardId, props)
+    const {data: generated, loading, generate} = useChartGenerator(props.dashboardId, props)
 
     const showLegend = computed(() => !props.short && !props.execution && !!chartOptions?.legend?.enabled)
 
@@ -365,7 +367,7 @@
 
     const dimensionColumn = computed(() => {
         const key = (chartOptions as Record<string, any>)?.colorByColumn as string | undefined
-        return (key ? data?.columns?.[key] : undefined) as {field?: string; labelKey?: string} | undefined
+        return (key ? data?.columns?.[key] : undefined) as {field?: string; key?: string} | undefined
     })
 
     function onChartClick(params: any) {
@@ -378,12 +380,13 @@
         ])
     }
 
-    function refresh(customFilters?: FilterObject[]) {
+    function refresh(customFilters?: QueryFilter[]) {
         return generate(undefined, customFilters)
     }
 
     defineExpose({
         refresh,
+        total: computed(() => generated.value?.total ?? 0),
     })
 
     watch(() => route.params.filters, () => refresh(), {deep: true})

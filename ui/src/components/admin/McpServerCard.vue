@@ -14,21 +14,21 @@
 
             <div class="meta-row">
                 <span class="meta">
-                    <span class="label">{{ t("type") }}:</span>
+                    <span class="label">{{ $t("type") }}:</span>
                     <span>{{ typeLabel }}</span>
                 </span>
                 <span
                     v-if="tenant"
                     class="meta"
                 >
-                    <span class="label">{{ t("tenant.name") }}:</span>
+                    <span class="label">{{ $t("tenant.name") }}:</span>
                     <span>{{ tenant }}</span>
                 </span>
             </div>
 
             <div class="meta-row">
                 <span class="meta">
-                    <span class="label">{{ t("mcp.auth_type") }}:</span>
+                    <span class="label">{{ $t("mcp.auth_type") }}:</span>
                     <span>{{ authLabel }}</span>
                 </span>
             </div>
@@ -40,7 +40,7 @@
                 size="small"
                 class="status-tag managed"
             >
-                {{ t("mcp.managed_by_kestra") }}
+                {{ $t("mcp.managed_by_kestra") }}
                 <KsIcon>
                     <Lock />
                 </KsIcon>
@@ -56,7 +56,7 @@
 
             <KsIconButton
                 v-if="canDelete && !isDefault"
-                :tooltip="t('delete')"
+                :tooltip="$t('delete')"
                 placement="left"
                 @click.stop.prevent="emit('delete')"
             >
@@ -70,7 +70,7 @@
     import {computed} from "vue"
     import {useI18n} from "vue-i18n"
 
-    import {type McpAuthType, type McpServer} from "../../stores/mcp"
+    import {type McpServerAuthType, type McpServer} from "../../stores/mcp"
 
     import ServerNetworkOutline from "vue-material-design-icons/ServerNetworkOutline.vue"
     import Lock from "vue-material-design-icons/Lock.vue"
@@ -81,7 +81,7 @@
     const props = defineProps<{
         id: string;
         serverType: McpServer["serverType"];
-        authType: McpAuthType;
+        authType: McpServerAuthType;
         disabled: boolean;
         isDefault?: boolean;
         tenant?: string | null;
@@ -95,7 +95,7 @@
 
     const {t} = useI18n({useScope: "global"})
 
-    const AUTH_LABELS: Record<McpAuthType, string> = {
+    const AUTH_LABELS: Record<McpServerAuthType, string> = {
         BASIC: "mcp.basic_auth",
         API_TOKEN: "mcp.api_token",
         OAUTH: "mcp.oauth",

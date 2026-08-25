@@ -446,7 +446,7 @@ class BroadcastTaskCoordinatorTest {
     }
 
     private static WorkerTaskData workerTaskData() {
-        return new WorkerTaskData(Map.of(), List.of(), null);
+        return new WorkerTaskData(Map.of(), List.of(), null, null);
     }
 
 }

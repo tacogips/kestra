@@ -4,12 +4,17 @@
         :execution="execution!"
     />
     <template v-else-if="execution && executionsStore.flow">
+        <ExecutionProgress
+            v-if="isProgressing"
+            :execution="execution"
+            class="gantt-progress"
+        />
         <!-- No task runs to plot: hide the filter bar + card and show only the execution
              status (mirrors the versioned-plugins empty screen). -->
         <KsEmptyState v-if="series.length === 0" :image="emptyIllustration">
             <template #description>
                 <span class="gantt-empty-status">
-                    {{ t("execution_status") }}
+                    {{ $t("execution_status") }}
                     <KsExecutionStatus :status="execution.state.current" />
                 </span>
                 <span v-if="emptyStateHint" class="gantt-empty-hint">{{ emptyStateHint }}</span>
@@ -26,14 +31,6 @@
                 @search="search = $event"
                 @filter="onFilterChange"
             />
-            <QuickFilters
-                v-if="!hasComplexFilters"
-                :levels="VALUES.LEVELS"
-                :level="effectiveSelectedLogLevel?.value"
-                :showInterval="false"
-                :levelLabel="t('filter.level_log_executions.label')"
-                @update:level="(value: string) => setLevelRouteValue({value, direction: 'min'})"
-            />
             <div class="gantt-stage">
                 <KsCard
                     id="gantt"
@@ -46,18 +43,18 @@
                             <div class="top">
                                 <div class="summary">
                                     <span class="item">
-                                        <span class="label">{{ t("total_duration") }}</span>
+                                        <span class="label">{{ $t("total_duration") }}</span>
                                         <Duration class="value" :histories="execution.state.histories" />
                                     </span>
                                     <span class="separator">/</span>
                                     <span class="item">
-                                        <span class="label">{{ t("tasks") }}</span>
+                                        <span class="label">{{ $t("tasks") }}</span>
                                         <span class="value">{{ tasksSummary }}</span>
                                     </span>
                                 </div>
                                 <div class="actions">
                                     <KsButton class="copy-logs" :icon="ContentCopy" link @click="copyAllLogs">
-                                        {{ t("copy all logs") }}
+                                        {{ $t("copy all logs") }}
                                     </KsButton>
                                     <KsExecutionStatus :status="execution.state.current" />
                                 </div>
@@ -87,7 +84,6 @@
                                     :item="item"
                                     :active="active"
                                     :data-index="index"
-                                    :sizeDependencies="[selectedTaskRuns]"
                                 >
                                     <div class="d-flex flex-column">
                                         <div
@@ -104,7 +100,7 @@
                                                 :style="{'--depth': item.depth || 0}"
                                             >
                                                 <div v-if="taskTypeByTaskRunId[item.id]" class="task-icon-box">
-                                                    <KsTaskIcon :cls="taskTypeByTaskRunId[item.id]" onlyIcon :icons="pluginsStore.icons" />
+                                                    <TaskIcon :cls="taskTypeByTaskRunId[item.id]" onlyIcon :loadIcon="pluginsStore.loadIcon" />
                                                 </div>
                                                 <KsTooltip placement="top-start">
                                                     <template #content>
@@ -120,7 +116,7 @@
                                             <div>
                                                 <KsTooltip v-if="item.attempts > 1" placement="right">
                                                     <template #content>
-                                                        <span>{{ t("this_task_has") }} {{ item.attempts }} {{ t("attempts").toLowerCase() }}.</span>
+                                                        <span>{{ $t("this_task_has") }} {{ item.attempts }} {{ $t("attempts").toLowerCase() }}.</span>
                                                     </template>
                                                     <Warning class="attempt_warn me-3" />
                                                 </KsTooltip>
@@ -156,7 +152,6 @@
                                                     :taskRun="item.task"
                                                     :execution="execution"
                                                     :flow="executionsStore.flow"
-                                                    @follow="emit('follow', $event)"
                                                 />
                                             </div>
                                         </div>
@@ -168,7 +163,6 @@
                                                         :excludeMetas="['namespace', 'flowId', 'taskId', 'executionId']"
                                                         :levelFilter="effectiveSelectedLogLevel"
                                                         hideTaskHeader
-                                                        @follow="emit('follow', $event)"
                                                         :targetFlow="executionsStore.flow"
                                                         class="mh-100 mx-3"
                                                     />
@@ -182,23 +176,13 @@
                         <!-- Task runs exist but the active filters/search hid them all. -->
                         <KsNoData
                             v-else
-                            :title="t('gantt_no_tasks_match_filters_title')"
-                            :description="t('gantt_no_tasks_match_filters')"
+                            :title="$t('gantt_no_tasks_match_filters_title')"
+                            :description="$t('gantt_no_tasks_match_filters')"
                         />
                     </template>
                 </KsCard>
             </div>
         </template>
-        <OnboardingSuccessPopup
-            :modelValue="showOnboardingSuccessPopup"
-            :backdrop="false"
-            @update:modelValue="showOnboardingSuccessPopup = $event"
-        />
-        <SaveExecuteAnimation
-            :modelValue="showSaveExecuteAnimation"
-            @update:modelValue="showSaveExecuteAnimation = $event"
-            @finished="onSaveExecuteAnimationFinished"
-        />
     </template>
 </template>
 
@@ -226,12 +210,12 @@
         normalizeRouteLevelFilter,
         readRouteLevelFilter,
         KsExecutionStatus,
-        KsTaskIcon,
         KsFilter as KSFilter,
         KsEmptyState,
         type AppliedFilter,
         type LevelFilterValue,
     } from "@kestra-io/design-system"
+    import TaskIcon from "../plugins/TaskIcon.vue"
 
     import * as FlowUtils from "../../utils/flowUtils"
     import * as Utils from "../../utils/utils"
@@ -239,15 +223,13 @@
     import {useExecutionsStore, type Execution} from "../../stores/executions"
     import {usePluginsStore} from "../../stores/plugins"
     import {useGanttExecutionFilter} from "../filter/configurations"
-    import {useValues} from "../filter/composables/useValues"
-    import {useComplexFilters} from "../filter/composables/useComplexFilters"
-    import QuickFilters from "../filter/QuickFilters.vue"
     import TaskRunDetails from "../logs/TaskRunDetails.vue"
     import TaskRunActions from "./TaskRunActions.vue"
     import ExecutionPending from "./ExecutionPending.vue"
+    import ExecutionProgress from "./ExecutionProgress.vue"
     import emptyIllustration from "../../assets/empty_visuals/generic.svg"
-    import OnboardingSuccessPopup from "../onboarding/OnboardingSuccessPopup.vue"
-    import SaveExecuteAnimation from "../inputs/SaveExecuteAnimation.vue"
+    import {buildTaskRunHierarchy} from "../../utils/taskRunHierarchy"
+    import {computeTaskBarPercents} from "../../utils/ganttSeries"
 
     interface TaskRun {
         id: string;
@@ -269,8 +251,7 @@
 
     interface TaskWrapper {
         task: TaskRun;
-        depth: number | undefined;
-        children?: TaskWrapper[];
+        depth: number;
     }
 
     interface SeriesItem {
@@ -299,17 +280,11 @@
         embed: true,
     })
 
-    const emit = defineEmits<{
-        follow: [event: unknown];
-        goToDetail: [event: unknown];
-    }>()
-
     const {t} = useI18n()
     const route = useRoute()
     const toast = useToast()
     const executionsStore = useExecutionsStore()
     const pluginsStore = usePluginsStore()
-    pluginsStore.fetchIcons()
     const verticalLayout = useBreakpoints(breakpointsElement).smallerOrEqual("sm")
     const ganttExecutionFilter = useGanttExecutionFilter()
 
@@ -334,14 +309,10 @@
     const selectedTaskRunId = ref<string | undefined>(undefined)
     const regularPaintingInterval = ref<ReturnType<typeof setInterval> | undefined>(undefined)
     const expandedFromRoute = ref(false)
-    const showOnboardingSuccessPopup = ref(false)
-    const showSaveExecuteAnimation = ref(false)
-    const onboardingAnimationPlayed = ref(false)
 
     const defaultLogLevel = computed(() => localStorage.getItem("defaultLogLevel") || "INFO")
     const {
         effectiveValue: effectiveSelectedLogLevel,
-        setRouteValue: setLevelRouteValue,
     } = useRouteFilterPolicy<LevelFilterValue>({
         defaultValue: () => ({value: defaultLogLevel.value, direction: "min"}),
         applyDefaultIfMissing: () => true,
@@ -350,9 +321,6 @@
         writeToRoute: normalizeRouteLevelFilter,
         hasUnsupportedRouteValue: hasUnsupportedRouteLevelComparator,
     })
-    const {VALUES} = useValues("logs")
-    const {hasComplexFilters} = useComplexFilters()
-
     const execution = computed<Execution | undefined>(() => executionsStore.execution)
 
     const taskRunsCount = computed<number>(() => execution.value?.taskRunList?.length ?? 0)
@@ -381,48 +349,12 @@
         return execution.value?.state?.histories?.[0] ? ts(execution.value.state.histories[0].date) : 0
     })
 
-    const tasks = computed<TaskWrapper[]>(() => {
-        const rootTasks: TaskWrapper[] = []
-        const childTasks: TaskWrapper[] = []
-        const sortedTasks: TaskWrapper[] = []
-        const tasksById: Record<string, TaskWrapper> = {}
-
-        for (const task of (execution.value?.taskRunList || []) as TaskRun[]) {
-            const taskWrapper: TaskWrapper = {task, depth: task.parentTaskRunId ? undefined : 0}
-            if (task.parentTaskRunId) {
-                childTasks.push(taskWrapper)
-            } else {
-                rootTasks.push(taskWrapper)
-            }
-            tasksById[task.id] = taskWrapper
-        }
-
-        for (let i = 0; i < childTasks.length; i++) {
-            const taskWrapper = childTasks[i]
-            const parentTask = tasksById[taskWrapper.task.parentTaskRunId!]
-            if (parentTask) {
-                taskWrapper.depth = parentTask.depth! + 1
-                tasksById[taskWrapper.task.id] = taskWrapper
-                if (!parentTask.children) {
-                    parentTask.children = []
-                }
-                parentTask.children.push(taskWrapper)
-            }
-        }
-
-        const nodeStart = (node: TaskWrapper): number => ts(node.task.state.histories[0].date)
-        const childrenSort = (nodes: TaskWrapper[]): void => {
-            nodes.sort((n1, n2) => (nodeStart(n1) > nodeStart(n2) ? 1 : -1))
-            for (const node of nodes) {
-                sortedTasks.push(node)
-                if (node.children) {
-                    childrenSort(node.children)
-                }
-            }
-        }
-        childrenSort(rootTasks)
-        return sortedTasks
-    })
+    const tasks = computed<TaskWrapper[]>(() =>
+        buildTaskRunHierarchy(
+            (execution.value?.taskRunList || []) as TaskRun[],
+            (n1, n2) => ts(n1.state.histories[0].date) - ts(n2.state.histories[0].date),
+        ),
+    )
 
     const taskTypeByTaskRun = computed<Array<[TaskRun, string | undefined]>>(() => {
         return series.value.map(serie => [serie.task, taskType(serie.task)])
@@ -481,6 +413,8 @@
 
     const isQueued = computed<boolean>(() => execution.value?.state?.current === "QUEUED")
 
+    const isProgressing = computed<boolean>(() => execution.value?.state?.current === State.RUNNING)
+
     // Supporting line shown under the status badge when the Gantt has no task runs to plot.
     const emptyStateHint = computed<string>(() => {
         const current = execution.value?.state?.current
@@ -538,7 +472,21 @@
 
         const newSeries: SeriesItem[] = []
         const executionDelta = delta()
-        const taskMap: Record<string, SeriesItem> = {}
+
+        const barInputs = tasks.value.map(({task}) => {
+            const stopTs = State.isRunning(task.state.current)
+                ? ts(new Date())
+                : ts(task.state.histories[task.state.histories.length - 1].date)
+            return {
+                id: task.id,
+                parentTaskRunId: task.parentTaskRunId,
+                startTs: ts(task.state.histories[0].date),
+                stopTs,
+            }
+        })
+        const barPercentsById = Object.fromEntries(
+            computeTaskBarPercents(barInputs, start.value, executionDelta).map((p) => [p.id, p]),
+        )
 
         for (const taskWrapper of tasks.value) {
             const task = taskWrapper.task
@@ -549,16 +497,12 @@
                 const lastIndex = task.state.histories.length - 1
                 stopTs = ts(task.state.histories[lastIndex].date)
             }
-
             const startTs = ts(task.state.histories[0].date)
 
             const runningState = task.state.histories.filter(r => r.state === State.RUNNING)
             const left = runningState.length > 0
                 ? ((ts(runningState[0].date) - startTs) / (stopTs - startTs) * 100)
                 : 0
-
-            const taskStart = startTs - start.value
-            const taskStop = stopTs - start.value - taskStart
 
             const taskDelta = stopTs - startTs
 
@@ -569,23 +513,17 @@
                 tooltip += `\n${t("running duration")} : ${durationUtils.humanDuration((stopTs - ts(runningState[0].date)) / 1000)}`
             }
 
-            let width = (taskStop / executionDelta) * 100
+
+            const barPercents = barPercentsById[task.id]
+            let width = barPercents.width
             if (State.isRunning(task.state.current)) {
                 width = ((stop() - startTs) / executionDelta) * 100
-            }
-
-            const startPercent = (taskStart / executionDelta) * 100
-            let parentEndPercent: number | undefined = undefined
-
-            if (task.parentTaskRunId && taskMap[task.parentTaskRunId]) {
-                const parent = taskMap[task.parentTaskRunId]
-                parentEndPercent = parent.start + parent.width
             }
 
             const seriesItem: SeriesItem = {
                 id: task.id,
                 name: task.taskId,
-                start: startPercent,
+                start: barPercents.start,
                 width,
                 left,
                 tooltip,
@@ -597,10 +535,8 @@
                 executionId: task.outputs?.executionId as string | undefined,
                 attempts: task.attempts ? task.attempts.length : 1,
                 depth: taskWrapper.depth,
-                parentEndPercent,
+                parentEndPercent: barPercents.parentEndPercent,
             }
-
-            taskMap[task.id] = seriesItem
             newSeries.push(seriesItem)
         }
         series.value = newSeries
@@ -687,30 +623,41 @@
         {immediate: true},
     )
 
+    /** `autoExpandGantt` route query: `true` (all), `failed`, or a comma-separated task id list. */
+    function applyAutoExpandFromRoute(currentExecution: any) {
+        const autoExpand = route.query.autoExpandGantt
+        if (typeof autoExpand !== "string" || !autoExpand) {
+            return
+        }
+        if (!currentExecution?.taskRunList || expandedFromRoute.value) {
+            return
+        }
+
+        const taskIds = autoExpand === "true" || autoExpand === "failed"
+            ? undefined
+            : autoExpand.split(",").map((id) => id.trim()).filter(Boolean)
+
+        const taskRuns = autoExpand === "failed"
+            ? currentExecution.taskRunList.filter((taskRun: any) => taskRun.state?.current === "FAILED")
+            : taskIds
+                ? currentExecution.taskRunList.filter((taskRun: any) => taskIds.includes(taskRun.taskId))
+                : currentExecution.taskRunList
+
+        if (taskRuns.length) {
+            selectedTaskRuns.value = taskRuns.map((taskRun: any) => taskRun.id)
+            expandedFromRoute.value = true
+        }
+    }
+
+    watch(() => route.query.autoExpandGantt,() => applyAutoExpandFromRoute(execution.value))
+
     watch(
         execution,
         (newExecution) => {
-            if (route.query.autoExpandGantt === "true" && newExecution?.taskRunList && !expandedFromRoute.value) {
-                selectedTaskRuns.value = newExecution.taskRunList.map(taskRun => taskRun.id)
-                expandedFromRoute.value = true
-            }
-
-            if (
-                route.query.onboardingSuccess === "true" &&
-                newExecution?.state?.current === "SUCCESS" &&
-                !onboardingAnimationPlayed.value
-            ) {
-                onboardingAnimationPlayed.value = true
-                showSaveExecuteAnimation.value = true
-                showOnboardingSuccessPopup.value = true
-            }
+            applyAutoExpandFromRoute(newExecution)
         },
         {immediate: true},
     )
-
-    function onSaveExecuteAnimationFinished() {
-        showOnboardingSuccessPopup.value = true
-    }
 
     onUnmounted(() => {
         clearInterval(regularPaintingInterval.value)
@@ -718,6 +665,10 @@
 </script>
 
 <style scoped lang="scss">
+    .gantt-progress {
+        margin-bottom: var(--ks-spacing-4);
+    }
+
     .kel-card {
         padding: 0;
 
@@ -841,6 +792,7 @@
                 position: relative;
                 padding-right: var(--ks-spacing-8);
                 background: var(--ks-dropdown-bg);
+                border-top: 1px solid var(--ks-border-default);
 
                 &.is-expanded {
                     background: var(--ks-dropdown-bg-active);
@@ -973,12 +925,7 @@
     }
 
     :deep(.vue-recycle-scroller__item-view) {
-        border-bottom: 1px solid var(--ks-border-default);
         margin-bottom: 10px;
-
-        &:last-child {
-            border-bottom: none;
-        }
     }
 
     .cursor-icon {

@@ -5,7 +5,6 @@
                 :title="resolvedTitle"
                 :description="resolvedDescription"
                 :image="artwork"
-                :video="resolvedVideo"
                 :learnMore="resolvedLearnMore"
             >
                 <template v-if="$slots.description || $slots.message" #description>
@@ -45,7 +44,6 @@
             type: string;
             title?: string;
             description?: string;
-            video?: string;
             learnMore?: string;
             demoCta?: boolean;
         }>(),
@@ -56,7 +54,7 @@
 
     const {t, te} = useI18n()
 
-    const typeLinks = computed(() => links[props.type])
+    const typeDocs = computed(() => links[props.type])
 
     const resolvedTitle = computed(() => {
         if (props.title) return props.title
@@ -70,13 +68,7 @@
         return te(key) ? t(key) : undefined
     })
 
-    const resolvedVideo = computed(() => props.video ?? typeLinks.value?.video)
-
-    const resolvedLearnMore = computed(() => {
-        if (props.learnMore !== undefined) return props.learnMore
-        if (props.demoCta) return "#"
-        return typeLinks.value?.learnMore
-    })
+    const resolvedLearnMore = computed(() => props.learnMore ?? typeDocs.value)
 
     const contactSalesUrl = computed(
         () => `https://kestra.io/demo?utm_source=app&utm_medium=referral&utm_campaign=demo-${props.type}`,

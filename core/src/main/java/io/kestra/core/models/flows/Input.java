@@ -1,5 +1,9 @@
 package io.kestra.core.models.flows;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 
@@ -19,10 +23,6 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.experimental.SuperBuilder;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-
 @SuperBuilder
 @Getter
 @NoArgsConstructor
@@ -38,6 +38,7 @@ import java.util.Map;
         @JsonSubTypes.Type(value = FloatInput.class, name = "FLOAT"),
         @JsonSubTypes.Type(value = IntInput.class, name = "INT"),
         @JsonSubTypes.Type(value = JsonInput.class, name = "JSON"),
+        @JsonSubTypes.Type(value = IonInput.class, name = "ION"),
         @JsonSubTypes.Type(value = SecretInput.class, name = "SECRET"),
         @JsonSubTypes.Type(value = StringInput.class, name = "STRING"),
         @JsonSubTypes.Type(value = SelectInput.class, name = "SELECT"),
@@ -47,6 +48,7 @@ import java.util.Map;
         @JsonSubTypes.Type(value = YamlInput.class, name = "YAML"),
         @JsonSubTypes.Type(value = EmailInput.class, name = "EMAIL"),
         @JsonSubTypes.Type(value = FormInput.class, name = "FORM"),
+        @JsonSubTypes.Type(value = ReusableInputsInput.class, name = "REUSABLE_INPUTS"),
     }
 )
 @InputValidation
@@ -145,7 +147,7 @@ public abstract class Input<T> implements Data {
 
     /**
      * @return all expanded leaf paths (e.g. {@code environment.region}, {@code credentials.api_key}, {@code api_key}),
-     * used by uniqueness validation to reject duplicate paths and prefix conflicts.
+     *         used by uniqueness validation to reject duplicate paths and prefix conflicts.
      */
     public static List<String> collectExpandedPaths(List<Input<?>> inputs) {
         List<Input<?>> expanded = expandToLeaves(inputs);

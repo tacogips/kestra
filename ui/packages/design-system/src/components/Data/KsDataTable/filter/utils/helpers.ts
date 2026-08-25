@@ -2,7 +2,11 @@ import type {LocationQuery} from "vue-router"
 import {type AppliedFilter, type FilterGroup, type LeafFilterGroup, type LogicalOperator, Comparators, isWrapperGroup} from "./filterTypes"
 import {MAX_RENDERABLE_NESTING_DEPTH} from "./constants"
 
-const decodeURIComponentSafely = (value: string | (string | null)[]): string | string[] =>
+/**
+ * Decodes a raw `filters[...]` query-param value. Exported because callers translating the route
+ * into a backend request payload decode the same values as {@link decodeSearchParams} does.
+ */
+export const decodeFilterValue = (value: string | (string | null)[]): string | string[] =>
     Array.isArray(value)
         ? value.filter(v => v !== null).map(decodeURIComponent)
         : decodeURIComponent(value)
@@ -30,7 +34,7 @@ const FILTER_KEY_PATTERN = new RegExp(
 
 const PREFIX_SEGMENT_PATTERN = /\[(and|or)]\[(\d+)]/gi
 
-interface PrefixSegment {
+export interface PrefixSegment {
     logical: LogicalOperator
     index: number
 }
@@ -56,18 +60,38 @@ export interface DecodedParam {
     wrapperLogical?: LogicalOperator
 }
 
+/** One `filters[and|or][N]…[field][OPERATION][subKey]` key, split into its parts. */
+export interface ParsedFilterKey {
+    /** The `[and|or][N]` grouping chain, outermost first; empty for a root-level filter. */
+    chain: PrefixSegment[]
+    field: string
+    operation: string
+    /** Present for keys carrying a sub-key, e.g. the label name in `filters[labels][EQUALS][env]`. */
+    subKey?: string
+}
+
+/**
+ * Parses a filter URL key into its parts, or returns null when the key does not match
+ * {@link FILTER_KEY_PATTERN}. Exported so callers that translate the route into a backend request
+ * payload read the key format from its owner instead of restating the regex.
+ */
+export const parseFilterKey = (key: string): ParsedFilterKey | null => {
+    const match = key.match(FILTER_KEY_PATTERN)
+    if (!match) return null
+
+    const [, prefix, field, operation, subKey] = match
+    return {chain: parsePrefixChain(prefix), field, operation, subKey}
+}
 
 export const decodeSearchParams = (query: LocationQuery): DecodedParam[] =>
     Object.entries(query)
         .filter(([key]) => key.startsWith("filters[") || key === "q")
         .map(([key, value]): DecodedParam | null => {
             if (!value) return null
-            const match = key.match(FILTER_KEY_PATTERN)
-            if (!match) return null
+            const parsed = parseFilterKey(key)
+            if (!parsed) return null
 
-            const [, prefix, field, operation, subKey] = match
-            const chain = parsePrefixChain(prefix)
-            return buildParam(field, operation, subKey, value, chain)
+            return buildParam(parsed.field, parsed.operation, parsed.subKey, value, parsed.chain)
         })
         .filter((v): v is DecodedParam => v !== null)
 
@@ -79,8 +103,8 @@ const buildParam = (
     chain: PrefixSegment[],
 ): DecodedParam => {
     const decoded = subKey
-        ? `${subKey}:${decodeURIComponentSafely(value)}`
-        : decodeURIComponentSafely(value)
+        ? `${subKey}:${decodeFilterValue(value)}`
+        : decodeFilterValue(value)
     return {
         field,
         value: decoded,

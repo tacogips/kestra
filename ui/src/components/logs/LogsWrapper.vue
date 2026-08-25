@@ -15,26 +15,14 @@
                 <template #navbar v-if="!embed || showFilters">
                     <KSFilter
                         :configuration="logFilter"
-                        :tableOptions="{
-                            chart: {shown: true, value: showChart, callback: onShowChartChange},
-                            refresh: {shown: true, callback: refresh},
-                            columns: {shown: false}
-                        }"
+                        :tableOptions="logTableOptions"
                         :defaultScope="false"
                         @filter="onFilterRouteSync"
-                    />
-                    <QuickFilters
-                        v-if="!hasComplexFilters"
-                        :levels="VALUES.LEVELS"
-                        :level="effectiveLogLevel?.value"
-                        :levelLabel="t('filter.level_log_executions.label')"
-                        :showInterval="false"
-                        @update:level="selectLevel"
                     />
                 </template>
 
                 <template v-if="showStatChart() && logsStore.logs && logsStore.logs.length > 0" #top>
-                    <Sections ref="dashboard" :charts :dashboard="{id: 'default', charts: []}" showDefault class="mb-4" />
+                    <Sections ref="dashboard" :charts :dashboard="DEFAULT_DASHBOARD" showDefault class="mb-4" />
                 </template>
 
                 <template #table>
@@ -52,8 +40,8 @@
                             </div>
                             <div class="logs-toolbar__actions">
                                 <LogDisplaySettings />
-                                <KsButton type="default" size="default" class="logs-toolbar__btn" :icon="Download" :aria-label="t('download logs')" :tooltip="t('download logs')" @click="openDownload" />
-                                <KsButton type="default" size="default" class="logs-toolbar__btn" :icon="ContentCopy" :aria-label="t('copy logs')" :tooltip="t('copy logs')" @click="copyAllLogs" />
+                                <KsButton square type="default" size="default" :icon="Download" :aria-label="$t('download logs')" :tooltip="$t('download logs')" @click="openDownload" />
+                                <KsButton square type="default" size="default" :icon="ContentCopy" :aria-label="$t('copy logs')" :tooltip="$t('copy logs')" @click="copyAllLogs" />
                             </div>
                         </div>
                         <div v-if="logsStore.logs !== undefined && logsStore.logs?.length > 0" class="logs-wrapper">
@@ -78,27 +66,51 @@
                                 :description="$t('no_logs_data_description')"
                             />
                         </div>
+
+                        <div
+                            v-if="logsStore.isCursorMode && (logsStore.hasPreviousPage || logsStore.hasNextCursor)"
+                            class="logs-cursor-nav"
+                        >
+                            <KsButton
+                                v-if="logsStore.hasPreviousPage"
+                                type="default"
+                                :loading="isLoading"
+                                :aria-label="t('previous')"
+                                @click="loadPrevious"
+                            >
+                                {{ t("previous") }}
+                            </KsButton>
+                            <KsButton
+                                v-if="logsStore.hasNextCursor"
+                                type="default"
+                                :loading="isLoading"
+                                :aria-label="t('next')"
+                                @click="loadNext"
+                            >
+                                {{ t("next") }}
+                            </KsButton>
+                        </div>
                     </div>
                 </template>
             </KsDataTable>
         </div>
 
-        <KsDialog v-model="downloadOpen" :title="t('download logs')" destroyOnClose>
-            <p class="download-hint">{{ t('download_logs_description') }}</p>
+        <KsDialog v-model="downloadOpen" :title="$t('download logs')" destroyOnClose>
+            <p class="download-hint">{{ $t('download_logs_description') }}</p>
             <QuickFilters
                 :levels="VALUES.LEVELS"
                 :intervals="quickIntervals"
                 :level="downloadLevel"
                 :timeRange="downloadTimeRange"
-                :levelLabel="t('filter.level_log_executions.label')"
-                :intervalLabel="t('filter.timeRange_log.label')"
+                :levelLabel="$t('filter.level_log_executions.label')"
+                :intervalLabel="$t('filter.timeRange_log.label')"
                 @update:level="(value: string) => (downloadLevel = value)"
                 @update:time-range="(value: string) => (downloadTimeRange = value)"
             />
             <template #footer>
-                <KsButton @click="downloadOpen = false">{{ t('cancel') }}</KsButton>
+                <KsButton @click="downloadOpen = false">{{ $t('cancel') }}</KsButton>
                 <KsButton type="primary" :loading="downloading" @click="downloadLogs">
-                    {{ t('download') }}
+                    {{ $t('download') }}
                 </KsButton>
             </template>
         </KsDialog>
@@ -106,14 +118,14 @@
 </template>
 
 <script setup lang="ts">
-    import {ref, computed, watch, useTemplateRef} from "vue"
+    import {ref, computed, nextTick, watch, useTemplateRef} from "vue"
     import {useRoute, useRouter} from "vue-router"
+    import {routeFamily} from "../../utils/routeFamily"
     import {useI18n} from "vue-i18n"
     import _merge from "lodash/merge"
     import moment from "moment"
     import {useLogFilter} from "../filter/configurations"
     import {useValues} from "../filter/composables/useValues"
-    import {useComplexFilters} from "../filter/composables/useComplexFilters"
     import QuickFilters from "../filter/QuickFilters.vue"
     import useRestoreUrl from "../../composables/useRestoreUrl"
     import {KsFilter as KSFilter} from "@kestra-io/design-system"
@@ -150,6 +162,7 @@
     import LogDisplaySettings from "./LogDisplaySettings.vue"
     import LogLevelNavigator from "./LogLevelNavigator.vue"
     import {buildValueFilterQuery} from "./logValueFilter"
+    import {DEFAULT_DASHBOARD} from "../../stores/dashboard"
 
     const props = withDefaults(defineProps<{
         logLevel?: string;
@@ -159,6 +172,7 @@
         reloadLogs?: number;
         namespace?: string | null;
         restoreurl?: boolean;
+        withCharts?: boolean;
     }>(), {
         embed: false,
         showFilters: false,
@@ -167,6 +181,7 @@
         reloadLogs: undefined,
         namespace: undefined,
         restoreurl: undefined,
+        withCharts: true,
     })
     defineEmits(["expand-subflow", "go-to-detail", "goToDetail"])
 
@@ -177,7 +192,6 @@
     const logsStore = useLogsStore()
     const logFilter = useLogFilter()
     const {VALUES} = useValues("logs")
-    const {hasComplexFilters} = useComplexFilters()
     const quickIntervals = computed(() => [
         {label: t("datepicker.short.15m"), value: "PT15M"},
         {label: t("datepicker.short.1h"), value: "PT1H"},
@@ -198,8 +212,8 @@
     const showChart = ref(localStorage.getItem(storageKeys.SHOW_LOGS_CHART) !== "false")
     const dashboardRef = useTemplateRef("dashboard")
 
-    const isFlowEdit = computed(() => route.name === "flows/update")
-    const isNamespaceEdit = computed(() => route.name === "namespaces/update")
+    const isFlowEdit = computed(() => routeFamily(route.name) === "flows/update")
+    const isNamespaceEdit = computed(() => routeFamily(route.name) === "namespaces/update")
     const hasLevelFilterUI = computed(() => !props.embed || props.showFilters)
     const defaultLogLevel = computed(() =>
         typeof window !== "undefined"
@@ -208,6 +222,7 @@
     )
     const {
         effectiveValue: effectiveLogLevel,
+        isRouteSettled: isLevelRouteSettled,
         syncFromAppliedFilters: syncLevelFromAppliedFilters,
     } = useRouteFilterPolicy<LevelFilterValue>({
         enabled: () => !props.filters && hasLevelFilterUI.value,
@@ -278,13 +293,37 @@
         return _merge(base, queryFilter)
     }
 
+    let hasLoadedOnce = false
     const loadData = async ({page, size}: {page: number; size: number; sort?: string}) => {
-        if (!loadInit.value) return
+        if (!loadInit.value || !isLevelRouteSettled.value) return
+        hasLoadedOnce = true
         isLoading.value = true
 
         await logsStore.findLogs(loadQuery({
             page,
             size,
+            sort: "timestamp:desc",
+        }))
+            .finally(() => {
+                isLoading.value = false
+            })
+    }
+
+    const loadNext = async () => {
+        isLoading.value = true
+        await logsStore.loadNextPage(loadQuery({
+            size: urlSize.value,
+            sort: "timestamp:desc",
+        }))
+            .finally(() => {
+                isLoading.value = false
+            })
+    }
+
+    const loadPrevious = async () => {
+        isLoading.value = true
+        await logsStore.loadPreviousPage(loadQuery({
+            size: urlSize.value,
             sort: "timestamp:desc",
         }))
             .finally(() => {
@@ -298,7 +337,10 @@
     const downloading = ref(false)
 
     const openDownload = () => {
-        downloadLevel.value = effectiveLogLevel.value?.value
+        const level = effectiveLogLevel.value
+        downloadLevel.value = level?.direction === "min" || level?.direction === "max"
+            ? level.value
+            : undefined
         downloadTimeRange.value = selectedTimeRange.value ?? undefined
         downloadOpen.value = true
     }
@@ -347,7 +389,9 @@
 
     let lastCountedKey = ""
     const refreshLevelCounts = () => {
-        if (!loadInit.value || lastCountedKey === filterQueryKey.value) return
+        // Cursor stores can't produce per-level counts, so the quick-filter chips (which key off a
+        // non-zero count) are hidden in cursor mode; level filtering stays available from the filter bar.
+        if (!loadInit.value || !isLevelRouteSettled.value || logsStore.isCursorMode || lastCountedKey === filterQueryKey.value) return
         const key = filterQueryKey.value
         lastCountedKey = key
         logsStore.levelCounts(loadQuery({})).then((counts) => {
@@ -417,7 +461,18 @@
         dataTable.value?.resetAndReload()
     })
 
-    const showStatChart = () => showChart.value
+    // The first load is gated on the level default having landed in the URL, and the query change
+    // that lands it is what reloads the table. When the gate opens without one — `isRouteSettled`
+    // giving up on a navigation that never lands — nothing else would trigger that first load.
+    watch(isLevelRouteSettled, (settled) => {
+        if (!settled) return
+        nextTick(() => {
+            if (hasLoadedOnce || isLoading.value) return
+            dataTable.value?.reload()
+        })
+    })
+
+    const showStatChart = () => props.withCharts && showChart.value && !logsStore.isCursorMode
 
     const onShowChartChange = (value: boolean) => {
         showChart.value = value
@@ -435,6 +490,14 @@
         dataTable.value?.reload()
     }
 
+    // The chart toggle is hidden (not just inert) in cursor mode: cursor stores don't aggregate, so
+    // the timeseries chart it controls can't be built — see `showStatChart` above.
+    const logTableOptions = computed(() => ({
+        chart: {shown: !logsStore.isCursorMode, value: showChart.value, callback: onShowChartChange},
+        refresh: {shown: true, callback: refresh},
+        columns: {shown: false},
+    }))
+
     watch(() => props.reloadLogs, (newValue) => {
         if (newValue) refresh()
     })
@@ -451,6 +514,13 @@
         box-shadow: 0px 2px 4px 0px var(--ks-shadow-element) !important;
     }
 
+    .logs-cursor-nav {
+        display: flex;
+        justify-content: center;
+        gap: var(--ks-spacing-2);
+        margin: 0 var(--ks-spacing-6) var(--ks-spacing-4);
+    }
+
     .logs-toolbar {
         display: flex;
         flex-wrap: wrap;
@@ -459,7 +529,7 @@
         position: sticky;
         top: 0;
         z-index: 10;
-        margin: 0 var(--ks-spacing-5) var(--ks-spacing-3);
+        margin: 0 var(--ks-spacing-6) var(--ks-spacing-3);
         padding: var(--ks-spacing-2) 0;
         background: var(--ks-bg-base);
 
@@ -473,14 +543,12 @@
         &__actions {
             display: flex;
             align-items: center;
-            gap: var(--ks-spacing-2);
             margin-left: auto;
+            gap: var(--ks-spacing-2);
         }
 
-        &__btn {
+        :deep(.kel-button) {
             margin: 0;
-            padding: var(--ks-spacing-2);
-            border-radius: var(--ks-radius-base);
         }
     }
 
@@ -501,7 +569,7 @@
             border-radius: var(--kel-border-radius-round);
             overflow: hidden;
             padding: 1rem;
-            margin: 0 var(--ks-spacing-5);
+            margin: 0 var(--ks-spacing-6);
             padding-top: .5rem;
             background-color: var(--ks-bg-surface);
             border: 1px solid var(--ks-border-default);

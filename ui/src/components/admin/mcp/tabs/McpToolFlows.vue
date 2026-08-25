@@ -13,18 +13,19 @@
                     :icon="Plus"
                     @click="createToolFlow"
                 >
-                    {{ t("mcp.tools.create_tool_flow") }}
+                    {{ $t("mcp.tools.create_tool_flow") }}
                 </KsButton>
             </template>
         </Empty>
 
         <KsDataTable
             v-else
+            fitHeight
             :data="filteredTools"
             :total="filteredTools.length"
             :loading="loading"
             :rowKey="rowKey"
-            :noDataText="t('mcp.tools.no_tools')"
+            :noDataText="$t('mcp.tools.no_tools')"
         >
             <template #navbar>
                 <KSFilter
@@ -49,7 +50,7 @@
 
             <KsTableColumn
                 prop="toolName"
-                :label="t('mcp.tools.tool_name')"
+                :label="$t('mcp.tools.tool_name')"
             >
                 <template #default="scope">
                     <KsId :value="(scope.row as McpTool).toolName" :shrink="false" />
@@ -84,31 +85,32 @@
                                 :key="ann"
                                 class="annotation"
                             >
-                                {{ t(`mcp.tools.${ann}`) }}
+                                {{ $t(`mcp.tools.${ann}`) }}
                             </KsTag>
                         </div>
                     </template>
                     <template v-else-if="col.prop === 'flow'">
-                        <router-link
+                        <KsEntityLink
+                            v-if="(scope.row as McpTool).flowId"
+                            entity="flow"
+                            :value="(scope.row as McpTool).flowId"
                             :to="flowRouteFor(scope.row as McpTool)"
-                            class="flow-link"
-                            :title="t('mcp.tools.view_flow')"
-                        >
-                            <span class="flow-id">{{ (scope.row as McpTool).flowId }}</span>
-                        </router-link>
+                        />
                     </template>
                     <template v-else-if="col.prop === 'namespace'">
-                        <span class="namespace">
-                            <FolderOpenOutline />
-                            {{ (scope.row as McpTool).namespace }}
-                        </span>
+                        <KsEntityLink
+                            v-if="(scope.row as McpTool).namespace"
+                            entity="namespace"
+                            :value="(scope.row as McpTool).namespace"
+                            :to="namespaceRouteFor(scope.row as McpTool)"
+                        />
                     </template>
                 </template>
             </KsTableColumn>
 
             <KsTableColumn
                 prop="state"
-                :label="t('mcp.tools.state')"
+                :label="$t('mcp.tools.state')"
                 width="120"
             >
                 <template #default="scope">
@@ -133,7 +135,6 @@
     import {useToolFlowCreation} from "../useToolFlowCreation"
 
     import {KsButton, KsDataTable, KsFilter as KSFilter, KsId, KsTableColumn, KsTag, decodeSearchParams} from "@kestra-io/design-system"
-    import FolderOpenOutline from "vue-material-design-icons/FolderOpenOutline.vue"
     import Plus from "vue-material-design-icons/Plus.vue"
     import Empty from "../../../layout/empty/Empty.vue"
 
@@ -256,11 +257,20 @@
 
     function flowRouteFor(tool: McpTool): RouteLocationRaw {
         return {
-            name: "flows/update",
+            name: "flows/update/edit",
             params: {
                 namespace: tool.namespace,
                 id: tool.flowId,
-                tab: "edit",
+                ...(route.params.tenant ? {tenant: route.params.tenant} : {}),
+            },
+        }
+    }
+
+    function namespaceRouteFor(tool: McpTool): RouteLocationRaw {
+        return {
+            name: "namespaces/update",
+            params: {
+                id: tool.namespace,
                 ...(route.params.tenant ? {tenant: route.params.tenant} : {}),
             },
         }
@@ -285,9 +295,15 @@
 </script>
 
 <style lang="scss" scoped>
+    .mcp-tools {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
     .mono {
         font-family: var(--ks-font-family-mono);
-        font-size: 0.8125rem;
+        font-size: var(--ks-font-size-sm);
         color: var(--ks-text-primary);
         background: transparent;
         padding: 0;
@@ -312,29 +328,5 @@
     .annotation {
         border: none;
         background: var(--ks-bg-tag);
-    }
-
-    .flow-link {
-        display: inline-flex;
-        align-items: center;
-        gap: var(--ks-spacing-2);
-        color: var(--ks-text-primary);
-        text-decoration: none;
-
-        &:hover {
-            color: var(--ks-text-link);
-        }
-    }
-
-    .flow-id {
-        font-family: var(--ks-font-family-mono);
-        font-size: var(--ks-font-size-sm);
-    }
-
-    .namespace {
-        display: inline-flex;
-        align-items: center;
-        gap: var(--ks-spacing-2);
-        color: var(--ks-text-primary);
     }
 </style>

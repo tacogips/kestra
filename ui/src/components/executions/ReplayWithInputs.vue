@@ -2,6 +2,7 @@
     <FlowRun
         flow
         execution
+        autoPrefill
         buttonText="replay"
         :buttonIcon="PlayBoxMultiple"
         :replaySubmit="handleReplaySubmit"
@@ -60,12 +61,11 @@
         const execution = response.data
         executionsStore.execution = execution
         await router.push({
-            name: "executions/update",
+            name: "executions/update/gantt",
             params: {
                 namespace: execution.namespace,
                 flowId: execution.flowId,
                 id: execution.id,
-                tab: "gantt",
                 tenant: route.params.tenant,
             },
         })

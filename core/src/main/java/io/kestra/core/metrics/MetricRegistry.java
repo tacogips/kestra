@@ -19,6 +19,7 @@ import io.kestra.core.runners.SubflowExecutionResult;
 import io.kestra.core.runners.WorkerTask;
 import io.kestra.core.runners.WorkerTaskResult;
 import io.kestra.core.runners.WorkerTrigger;
+import io.kestra.core.utils.ListUtils;
 import io.kestra.core.worker.WorkerGroups;
 import io.kestra.core.worker.WorkerQueues;
 
@@ -146,6 +147,8 @@ public class MetricRegistry {
     public static final String METRIC_EXECUTOR_SLA_MONITOR_LOOP_DURATION_DESCRIPTION = "SLA monitor loop duration inside the Executor";
     public static final String METRIC_EXECUTOR_EXECUTION_DELAY_LOOP_DURATION = "executor.loop.delay.duration";
     public static final String METRIC_EXECUTOR_EXECUTION_DELAY_LOOP_DURATION_DESCRIPTION = "Execution delay loop duration inside the Executor";
+    public static final String METRIC_EXECUTOR_QUOTA_EXCEEDED_COUNT = "executor.quota.exceeded.total";
+    public static final String METRIC_EXECUTOR_QUOTA_EXCEEDED_COUNT_DESCRIPTION = "The total number of exceeded quotas evaluated by the Executor";
 
     public static final String METRIC_INDEXER_REQUEST_COUNT = "indexer.request.count";
     public static final String METRIC_INDEXER_REQUEST_COUNT_DESCRIPTION = "Total number of batches of records received by the Indexer";
@@ -185,13 +188,39 @@ public class MetricRegistry {
     public static final String METRIC_SCHEDULER_ASSIGNED_VNODES_COUNT = "scheduler.assigned.vnodes.count";
     public static final String METRIC_SCHEDULER_ASSIGNED_VNODES_COUNT_DESCRIPTION = "The number of virtual nodes assigned to the scheduler";
 
+    public static final String METRIC_WEBSERVER_EXECUTION_RESTART_TOTAL = "webserver.execution.restart.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_RESTART_TOTAL_DESCRIPTION = "The total number of execution restarted from the API.";
+    public static final String METRIC_WEBSERVER_EXECUTION_REPLAY_TOTAL = "webserver.execution.replay.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_REPLAY_TOTAL_DESCRIPTION = "The total number of execution replayed from the API.";
+    public static final String METRIC_WEBSERVER_EXECUTION_PAUSE_TOTAL = "webserver.execution.pause.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_PAUSE_TOTAL_DESCRIPTION = "The total number of execution paused from the API.";
+    public static final String METRIC_WEBSERVER_EXECUTION_RESUME_TOTAL = "webserver.execution.resume.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_RESUME_TOTAL_DESCRIPTION = "The total number of execution resumed from the API.";
+    public static final String METRIC_WEBSERVER_EXECUTION_RESUME_FROM_BREAKPOINT_TOTAL = "webserver.execution.resumefrombreakpoint.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_RESUME_FROM_BREAKPOINT_TOTAL_DESCRIPTION = "The total number of execution resumed from a breakpoint from the API.";
+    public static final String METRIC_WEBSERVER_EXECUTION_FORCE_RUN_TOTAL = "webserver.execution.forcerun.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_FORCE_RUN_TOTAL_DESCRIPTION = "The total number of execution force run from the API.";
+    public static final String METRIC_WEBSERVER_EXECUTION_KILL_TOTAL = "webserver.execution.kill.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_KILL_TOTAL_DESCRIPTION = "The total number of execution kill from the API.";
+    public static final String METRIC_WEBSERVER_EXECUTION_CHANGE_STATUS_TOTAL = "webserver.execution.changestatus.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_CHANGE_STATUS_TOTAL_DESCRIPTION = "The total number of execution changed status from the API.";
+    public static final String METRIC_WEBSERVER_EXECUTION_UPDATE_LABELS_TOTAL = "webserver.execution.updatelabels.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_UPDATE_LABELS_TOTAL_DESCRIPTION = "The total number of execution updated labels from the API.";
+    public static final String METRIC_WEBSERVER_EXECUTION_UNQUEUE_TOTAL = "webserver.execution.unqueue.total";
+    public static final String METRIC_WEBSERVER_EXECUTION_UNQUEUE_TOTAL_DESCRIPTION = "The total number of execution unqueued from the API.";
+    public static final String METRIC_WEBSERVER_TASKRUN_CHANGE_STATE_TOTAL = "webserver.taskrun.changestate.total";
+    public static final String METRIC_WEBSERVER_TASKRUN_CHANGE_STATE_TOTAL_DESCRIPTION = "The total number of taskrun changed state from the API.";
+
     public static final String METRIC_MAINTENANCE_ENTER_COUNT = "server.maintenance.enter.count";
     public static final String METRIC_MAINTENANCE_ENTER_COUNT_DESCRIPTION = "The total number of times maintenance mode was entered";
     public static final String METRIC_MAINTENANCE_EXIT_COUNT = "server.maintenance.exit.count";
     public static final String METRIC_MAINTENANCE_EXIT_COUNT_DESCRIPTION = "The total number of times maintenance mode was exited";
 
     public static final String METRIC_JDBC_QUERY_DURATION = "jdbc.query.duration";
-    public static final String METRIC_JDBC_QUERY_DURATION_DESCRIPTION = "Duration of database queries";
+    public static final String METRIC_JDBC_QUERY_DURATION_DESCRIPTION = "Duration of database queries, including row fetch, tagged with sanitized SQL (IN-lists collapsed, identifiers and sort columns redacted). Only queries above the 'kestra.jdbc.metrics.query-duration-threshold-ms' threshold (default 10ms) are monitored";
+
+    public static final String METRIC_JDBC_EXECUTION_STATISTICS_COMPACTOR_DURATION = "jdbc.execution-statistics.compactor.duration";
+    public static final String METRIC_JDBC_EXECUTION_STATISTICS_COMPACTOR_DURATION_DESCRIPTION = "Duration of a single execution statistics compaction run";
 
     public static final String METRIC_QUEUE_MESSAGE_BIG_TOTAL = "queue.message.big.total";
     public static final String METRIC_QUEUE_MESSAGE_BIG_TOTAL_DESCRIPTION = "Total number of big messages";
@@ -515,7 +544,7 @@ public class MetricRegistry {
         var baseTags = new String[] {
             TAG_TRIGGER_TYPE, trigger.getType(),
         };
-        var labelTags = getLabelTags(trigger.getLabels());
+        var labelTags = getLabelTags(trigger.getLabels() != null ? trigger.getLabels() : List.of());
         return ArrayUtils.addAll(baseTags, labelTags);
     }
 
@@ -536,13 +565,23 @@ public class MetricRegistry {
         return ArrayUtils.addAll(ArrayUtils.addAll(baseTags, labelTags), tenantTag);
     }
 
-    public String[] tags(TriggerEvaluationResult evaluationResult, TriggerId triggerId) {
+    /**
+     * Return tags for a trigger evaluation, tagged like the execution it produces.
+     *
+     * @param evaluationResult the evaluation result, carrying the trigger's own labels
+     * @param triggerId the evaluated trigger
+     * @param flowLabels the labels of the flow owning the trigger, which the evaluation result does not carry
+     * @return tags to apply to metrics
+     */
+    public String[] tags(TriggerEvaluationResult evaluationResult, TriggerId triggerId, @Nullable List<Label> flowLabels) {
         var baseTags = new String[] {
             TAG_FLOW_ID, triggerId.getFlowId(),
             TAG_NAMESPACE_ID, triggerId.getNamespace(),
             TAG_STATE, evaluationResult.stateType().name(),
         };
-        var labelTags = getLabelTags(evaluationResult.labels() != null ? evaluationResult.labels() : List.of());
+        // trigger labels first: getLabelTags keeps the first match, which is how the trigger overrides the
+        // flow on the execution these metrics describe (there, flow labels come first and dedup keeps the last)
+        var labelTags = getLabelTags(ListUtils.emptyOnNull(ListUtils.concat(evaluationResult.labels(), flowLabels)));
         var tenantTag = getTenantTag(triggerId.getTenantId());
         return ArrayUtils.addAll(ArrayUtils.addAll(baseTags, labelTags), tenantTag);
     }

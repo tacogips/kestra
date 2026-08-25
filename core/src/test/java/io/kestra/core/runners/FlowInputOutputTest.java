@@ -10,11 +10,13 @@ import java.security.GeneralSecurityException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Publisher;
 
@@ -22,14 +24,20 @@ import io.kestra.core.encryption.EncryptionService;
 import io.kestra.core.exceptions.InputOutputValidationException;
 import io.kestra.core.models.executions.Execution;
 import io.kestra.core.models.flows.*;
+import io.kestra.core.models.flows.input.EmailInput;
 import io.kestra.core.models.flows.input.FileInput;
+import io.kestra.core.models.flows.input.FloatInput;
 import io.kestra.core.models.flows.input.FormInput;
 import io.kestra.core.models.flows.input.InputAndValue;
 import io.kestra.core.models.flows.input.IntInput;
+import io.kestra.core.models.flows.input.IonInput;
 import io.kestra.core.models.flows.input.MultiselectInput;
+import io.kestra.core.models.flows.input.ReusableInputsInput;
 import io.kestra.core.models.flows.input.SecretInput;
+import io.kestra.core.models.flows.input.SelectInput;
 import io.kestra.core.models.flows.input.StringInput;
 import io.kestra.core.models.flows.input.URIInput;
+import io.kestra.core.models.flows.input.YamlInput;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.common.EncryptedString;
 import io.kestra.core.secret.SecretNotFoundException;
@@ -107,7 +115,6 @@ class FlowInputOutputTest {
     @Test
     void shouldResolveEnabledInputsGivenInputWithConditionalExpressionMatchingTrue() {
         // Given
-
         StringInput input1 = StringInput.builder()
             .id("input1")
             .build();
@@ -141,7 +148,6 @@ class FlowInputOutputTest {
     @Test
     void shouldResolveEnabledInputsGivenInputWithConditionalInputTrue() {
         // Given
-
         StringInput input1 = StringInput.builder()
             .id("input1")
             .build();
@@ -176,7 +182,6 @@ class FlowInputOutputTest {
     @Test
     void shouldResolveDisabledInputsGivenInputWithConditionalInputFalse() {
         // Given
-
         StringInput input1 = StringInput.builder()
             .id("input1")
             .build();
@@ -442,6 +447,89 @@ class FlowInputOutputTest {
     }
 
     @Test
+    void shouldParseIonTextIntoStructuredValues() {
+        // Given
+        Flow flow = Flow.builder()
+            .id("test-flow")
+            .namespace("io.kestra.test")
+            .inputs(
+                List.of(
+                    IonInput.builder().id("record").type(Type.ION).build(),
+                    IonInput.builder().id("items").type(Type.ION).build()
+                )
+            )
+            .build();
+
+        // When
+        Map<String, Object> result = flowInputOutput.readExecutionInputs(
+            flow,
+            DEFAULT_TEST_EXECUTION,
+            Map.of(
+                "record", "{name:\"Ada\",nested:{active:true}}",
+                "items", "[\"one\",\"two\"]"
+            )
+        );
+
+        // Then
+        assertThat(result.get("record")).isEqualTo(
+            Map.of("name", "Ada", "nested", Map.of("active", true))
+        );
+        assertThat(result.get("items")).isEqualTo(List.of("one", "two"));
+    }
+
+    @Test
+    void shouldPassThroughStructuredIonValues() {
+        // Given
+        Map<String, Object> record = Map.of("name", "Ada");
+        List<String> items = List.of("one", "two");
+        Flow flow = Flow.builder()
+            .id("test-flow")
+            .namespace("io.kestra.test")
+            .inputs(
+                List.of(
+                    IonInput.builder().id("record").type(Type.ION).build(),
+                    IonInput.builder().id("items").type(Type.ION).build()
+                )
+            )
+            .build();
+
+        // When
+        Map<String, Object> result = flowInputOutput.readExecutionInputs(
+            flow,
+            DEFAULT_TEST_EXECUTION,
+            Map.of("record", record, "items", items)
+        );
+
+        // Then
+        assertThat(result).containsEntry("record", record).containsEntry("items", items);
+    }
+
+    @Test
+    void shouldParseIonTextDefaultIntoStructuredValue() {
+        // Given
+        IonInput input = IonInput.builder()
+            .id("record")
+            .type(Type.ION)
+            .defaults(Property.ofValue("{name:\"Ada\"}"))
+            .build();
+        Flow flow = Flow.builder()
+            .id("test-flow")
+            .namespace("io.kestra.test")
+            .inputs(List.of(input))
+            .build();
+
+        // When
+        Map<String, Object> result = flowInputOutput.readExecutionInputs(
+            flow,
+            DEFAULT_TEST_EXECUTION,
+            Map.of()
+        );
+
+        // Then
+        assertThat(result.get("record")).isEqualTo(Map.of("name", "Ada"));
+    }
+
+    @Test
     void shouldFlagRenderFailuresAsRenderErrorsButNotValueErrors() {
         // A dynamic-values input whose expression fails to render -> the field is broken (render error)
         MultiselectInput brokenExpression = MultiselectInput.builder()
@@ -465,7 +553,8 @@ class FlowInputOutputTest {
             .build();
 
         List<InputAndValue> values = flowInputOutput.resolveInputs(
-            List.of(brokenExpression, brokenDefault, requiredMissing), null, DEFAULT_TEST_EXECUTION, Map.of());
+            List.of(brokenExpression, brokenDefault, requiredMissing), null, DEFAULT_TEST_EXECUTION, Map.of()
+        );
 
         assertThat(values.get(0).exceptions())
             .as("expression render failure is a render error")
@@ -651,8 +740,10 @@ class FlowInputOutputTest {
 
         // When
         Map<String, Object> result = flowInputOutput
-            .readExecutionInputs(flow, executionId,
-                Flux.just(new MemoryCompletedPart("greeting", "hello".getBytes(StandardCharsets.UTF_8))))
+            .readExecutionInputs(
+                flow, executionId,
+                Flux.just(new MemoryCompletedPart("greeting", "hello".getBytes(StandardCharsets.UTF_8)))
+            )
             .block();
 
         // Then
@@ -672,13 +763,120 @@ class FlowInputOutputTest {
 
         // When
         Map<String, Object> result = flowInputOutput
-            .readExecutionInputs(flow, executionId,
-                Flux.just(new MemoryCompletedFileUpload("upload", "data.csv", "col1,col2".getBytes(StandardCharsets.UTF_8))))
+            .readExecutionInputs(
+                flow, executionId,
+                Flux.just(new MemoryCompletedFileUpload("upload", "data.csv", "col1,col2".getBytes(StandardCharsets.UTF_8)))
+            )
             .block();
 
         // Then
         assertThat(result.get("upload")).isInstanceOf(URI.class);
         assertThat(result.get("upload").toString()).contains(executionId);
+    }
+
+    private static Stream<Input<?>> inputsThatDoNotAcceptFileUploads() {
+        return Stream.of(
+            IonInput.builder().id("upload").type(Type.ION).build(),
+            YamlInput.builder().id("upload").type(Type.YAML).build(),
+            StringInput.builder().id("upload").type(Type.STRING).build(),
+            SelectInput.builder().id("upload").type(Type.SELECT).build(),
+            EmailInput.builder().id("upload").type(Type.EMAIL).build(),
+            SecretInput.builder().id("upload").type(Type.SECRET).build(),
+            URIInput.builder().id("upload").type(Type.URI).build()
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("inputsThatDoNotAcceptFileUploads")
+    void shouldRejectFileUploadForEveryInputTypeOtherThanFile(Input<?> input) {
+        // Given
+        Publisher<CompletedPart> data = Mono.just(new MemoryCompletedFileUpload("upload", "data.txt", "content".getBytes(StandardCharsets.UTF_8)));
+
+        // When
+        List<InputAndValue> values = flowInputOutput.validateExecutionInputs(List.of(input), null, DEFAULT_TEST_EXECUTION, data).block();
+
+        // Then
+        assertThat(values).hasSize(1);
+        assertThat(values.getFirst().exceptions())
+            .as("a file upload for a %s input must be rejected", input.getType())
+            .isNotEmpty();
+        // the raw value must stay a plain String (the storage URI), never leak the internal upload marker
+        assertThat(values.getFirst().value()).isInstanceOf(String.class);
+    }
+
+    @Test
+    void shouldIgnoreFileUploadOnDisabledInputInsteadOfRejectingIt() {
+        // Given
+        StringInput trigger = StringInput.builder().id("trigger").build();
+        // disabled: dependsOn condition never matches
+        IonInput disabledPayload = IonInput.builder()
+            .id("payload")
+            .type(Type.ION)
+            .dependsOn(new DependsOn(List.of("trigger"), "{{ inputs.trigger equals 'enable-payload' }}"))
+            .build();
+        Publisher<CompletedPart> data = Flux.concat(
+            Mono.just(new MemoryCompletedPart("trigger", "something-else".getBytes(StandardCharsets.UTF_8))),
+            Mono.just(new MemoryCompletedFileUpload("payload", "data.ion", "{a:1}".getBytes(StandardCharsets.UTF_8)))
+        );
+
+        // When
+        List<InputAndValue> values = flowInputOutput.validateExecutionInputs(List.of(trigger, disabledPayload), null, DEFAULT_TEST_EXECUTION, data).block();
+
+        // Then: a disabled input is dropped like any other disabled input, not rejected for its stray file upload
+        InputAndValue payloadResult = values.stream().filter(it -> it.input().getId().equals("payload")).findFirst().orElseThrow();
+        assertThat(payloadResult.enabled()).isFalse();
+        assertThat(payloadResult.exceptions()).isNull();
+    }
+
+    @Test
+    void shouldStillAcceptFileUploadOnFileInputAlongsideOtherInputs() {
+        // Given
+        Flow flow = Flow.builder()
+            .id("test-flow")
+            .tenantId(MAIN_TENANT)
+            .namespace("io.kestra.test")
+            .inputs(
+                List.of(
+                    FileInput.builder().id("upload").type(Type.FILE).build(),
+                    StringInput.builder().id("comment").type(Type.STRING).build()
+                )
+            )
+            .build();
+
+        // When
+        Map<String, Object> result = flowInputOutput.readExecutionInputs(
+            flow,
+            IdUtils.create(),
+            Flux.concat(
+                Mono.just(new MemoryCompletedFileUpload("upload", "data.csv", "col1,col2".getBytes(StandardCharsets.UTF_8))),
+                Mono.just(new MemoryCompletedPart("comment", "hello".getBytes(StandardCharsets.UTF_8)))
+            )
+        ).block();
+
+        // Then
+        assertThat(result.get("upload")).isInstanceOf(URI.class);
+        assertThat(result.get("comment")).isEqualTo("hello");
+    }
+
+    @Test
+    void shouldNotFailWhenFlowHasNoDeclaredInputsAndAFileIsUploaded() {
+        // Given
+        Flow flow = Flow.builder()
+            .id("test-flow")
+            .tenantId(MAIN_TENANT)
+            .namespace("io.kestra.test")
+            .inputs(null)
+            .build();
+
+        // When: an undeclared-inputs flow must not NPE while looking up the (null) declared input list
+        Map<String, Object> outputs = flowInputOutput.readExecutionInputs(
+            flow,
+            IdUtils.create(),
+            Flux.just(new MemoryCompletedFileUpload("upload", "data.txt", "content".getBytes(StandardCharsets.UTF_8)))
+        ).block();
+
+        // Then: the upload is stored under an undeclared input id, which is a separate (pre-existing) warning path
+        assertThat(outputs).isEmpty();
     }
 
     @Test
@@ -687,9 +885,11 @@ class FlowInputOutputTest {
         FormInput form = FormInput.builder()
             .id("environment")
             .type(Type.FORM)
-            .inputs(List.of(
-                StringInput.builder().id("region").type(Type.STRING).build()
-            ))
+            .inputs(
+                List.of(
+                    StringInput.builder().id("region").type(Type.STRING).build()
+                )
+            )
             .build();
 
         // When expanded
@@ -708,16 +908,20 @@ class FlowInputOutputTest {
         Flow flow = Flow.builder()
             .id("test-flow")
             .namespace("io.kestra.test")
-            .inputs(List.of(
-                FormInput.builder()
-                    .id("environment")
-                    .type(Type.FORM)
-                    .inputs(List.of(
-                        StringInput.builder().id("region").type(Type.STRING).required(true).build()
-                    ))
-                    .build(),
-                StringInput.builder().id("api_key").type(Type.STRING).required(true).build()
-            ))
+            .inputs(
+                List.of(
+                    FormInput.builder()
+                        .id("environment")
+                        .type(Type.FORM)
+                        .inputs(
+                            List.of(
+                                StringInput.builder().id("region").type(Type.STRING).required(true).build()
+                            )
+                        )
+                        .build(),
+                    StringInput.builder().id("api_key").type(Type.STRING).required(true).build()
+                )
+            )
             .build();
 
         // When submitting dotted part names
@@ -739,15 +943,19 @@ class FlowInputOutputTest {
         Flow flow = Flow.builder()
             .id("test-flow")
             .namespace("io.kestra.test")
-            .inputs(List.of(
-                FormInput.builder()
-                    .id("environment")
-                    .type(Type.FORM)
-                    .inputs(List.of(
-                        StringInput.builder().id("region").type(Type.STRING).defaults(Property.ofValue("EU")).build()
-                    ))
-                    .build()
-            ))
+            .inputs(
+                List.of(
+                    FormInput.builder()
+                        .id("environment")
+                        .type(Type.FORM)
+                        .inputs(
+                            List.of(
+                                StringInput.builder().id("region").type(Type.STRING).defaults(Property.ofValue("EU")).build()
+                            )
+                        )
+                        .build()
+                )
+            )
             .build();
 
         // When submitting nothing
@@ -764,20 +972,24 @@ class FlowInputOutputTest {
         Flow flow = Flow.builder()
             .id("test-flow")
             .namespace("io.kestra.test")
-            .inputs(List.of(
-                FormInput.builder()
-                    .id("credentials")
-                    .type(Type.FORM)
-                    .inputs(List.of(
-                        SecretInput.builder()
-                            .id("api_key")
-                            .type(Type.SECRET)
-                            .defaults(Property.ofExpression("{{ secret('???') }}"))
-                            .required(false)
-                            .build()
-                    ))
-                    .build()
-            ))
+            .inputs(
+                List.of(
+                    FormInput.builder()
+                        .id("credentials")
+                        .type(Type.FORM)
+                        .inputs(
+                            List.of(
+                                SecretInput.builder()
+                                    .id("api_key")
+                                    .type(Type.SECRET)
+                                    .defaults(Property.ofExpression("{{ secret('???') }}"))
+                                    .required(false)
+                                    .build()
+                            )
+                        )
+                        .build()
+                )
+            )
             .build();
 
         // When reading inputs (read path does not obfuscate)
@@ -792,21 +1004,96 @@ class FlowInputOutputTest {
     }
 
     @Test
+    void shouldEncryptSubmittedFormNestedSecret() throws GeneralSecurityException {
+        Flow flow = Flow.builder()
+            .id("test-flow")
+            .namespace("io.kestra.test")
+            .inputs(
+                List.of(
+                    FormInput.builder()
+                        .id("credentials")
+                        .type(Type.FORM)
+                        .inputs(
+                            List.of(
+                                SecretInput.builder()
+                                    .id("api_key")
+                                    .type(Type.SECRET)
+                                    .required(true)
+                                    .build()
+                            )
+                        )
+                        .build()
+                )
+            )
+            .build();
+
+        Map<String, Object> result = flowInputOutput.readExecutionInputs(
+            flow, DEFAULT_TEST_EXECUTION, Map.of("credentials.api_key", "my-plaintext-secret")
+        );
+
+        Object apiKey = ((Map<?, ?>) result.get("credentials")).get("api_key");
+        assertThat(apiKey).isInstanceOf(EncryptedString.class);
+        assertThat(EncryptionService.decrypt(secretKey, ((EncryptedString) apiKey).getValue()))
+            .isEqualTo("my-plaintext-secret");
+    }
+
+    @Test
+    void shouldIncludeBothFormAndReusableRefSecretIdsInResolvableInputs() {
+        Flow flow = Flow.builder()
+            .id("test-flow")
+            .namespace("io.kestra.test")
+            .inputs(
+                List.of(
+                    FormInput.builder()
+                        .id("creds")
+                        .type(Type.FORM)
+                        .inputs(
+                            List.of(
+                                SecretInput.builder().id("token").type(Type.SECRET).required(true).build()
+                            )
+                        )
+                        .build(),
+                    ReusableInputsInput.builder()
+                        .id("block")
+                        .type(Type.REUSABLE_INPUTS)
+                        .ref("my-block")
+                        .required(false)
+                        .build()
+                )
+            )
+            .build();
+
+        // Stub expander: resolves the REUSABLE_INPUTS reference to a single SECRET child
+        ReusableInputsExpander stubExpander = (tenantId, ns, input, path) -> List.of(SecretInput.builder().id(input.getId() + ".api_key").type(Type.SECRET).required(true).build());
+
+        List<String> secretIds = flow.resolvableInputs(stubExpander).stream()
+            .filter(i -> i.getType() == Type.SECRET)
+            .map(Input::getId)
+            .toList();
+
+        assertThat(secretIds).containsExactlyInAnyOrder("creds.token", "block.api_key");
+    }
+
+    @Test
     void shouldResolveFormInputsAsFlatDottedLeafList() {
         // Given a flow whose FORM 'environment' groups 'region', plus an ungrouped top-level input.
         Flow flow = Flow.builder()
             .id("test-flow")
             .namespace("io.kestra.test")
-            .inputs(List.of(
-                FormInput.builder()
-                    .id("environment")
-                    .type(Type.FORM)
-                    .inputs(List.of(
-                        StringInput.builder().id("region").type(Type.STRING).required(true).build()
-                    ))
-                    .build(),
-                StringInput.builder().id("api_key").type(Type.STRING).required(true).build()
-            ))
+            .inputs(
+                List.of(
+                    FormInput.builder()
+                        .id("environment")
+                        .type(Type.FORM)
+                        .inputs(
+                            List.of(
+                                StringInput.builder().id("region").type(Type.STRING).required(true).build()
+                            )
+                        )
+                        .build(),
+                    StringInput.builder().id("api_key").type(Type.STRING).required(true).build()
+                )
+            )
             .build();
 
         // When resolving submitted dotted part names. resolveInputs is the synchronous core of
@@ -824,6 +1111,131 @@ class FlowInputOutputTest {
         InputAndValue region = values.stream()
             .filter(v -> v.input().getId().equals("environment.region")).findFirst().orElseThrow();
         assertThat(region.value()).isEqualTo("EU");
+    }
+
+    @Test
+    void shouldResolveEmptyStringAsNullForOptionalIntInput() {
+        // Given — an optional INT input receiving "" (Pebble renders a null reference as "")
+        IntInput input = IntInput.builder()
+            .id("integerValue")
+            .type(Type.INT)
+            .required(false)
+            .build();
+
+        // When
+        List<InputAndValue> values = flowInputOutput.resolveInputs(
+            List.of(input), null, DEFAULT_TEST_EXECUTION, Map.of("integerValue", "")
+        );
+
+        // Then — resolves to null without throwing
+        assertThat(values).hasSize(1);
+        assertThat(values.getFirst().value()).isNull();
+        assertThat(values.getFirst().exceptions()).isNull();
+    }
+
+    @Test
+    void shouldApplyDefaultWhenOptionalIntInputIsEmptyString() {
+        // Given — an optional INT input with a default, receiving "" from a Pebble expression
+        IntInput input = IntInput.builder()
+            .id("integerValue")
+            .type(Type.INT)
+            .required(false)
+            .defaults(Property.ofValue(42))
+            .build();
+
+        // When
+        List<InputAndValue> values = flowInputOutput.resolveInputs(
+            List.of(input), null, DEFAULT_TEST_EXECUTION, Map.of("integerValue", "")
+        );
+
+        // Then — the declared default is applied instead of throwing
+        assertThat(values).hasSize(1);
+        assertThat(values.getFirst().value()).isEqualTo(42);
+        assertThat(values.getFirst().isDefault()).isTrue();
+        assertThat(values.getFirst().exceptions()).isNull();
+    }
+
+    @Test
+    void shouldFailWithMissingRequiredWhenRequiredIntInputIsEmptyString() {
+        // Given — a required INT input receiving "" (regression guard: error must not say "For input string")
+        IntInput input = IntInput.builder()
+            .id("integerValue")
+            .type(Type.INT)
+            .required(true)
+            .build();
+
+        // When
+        List<InputAndValue> values = flowInputOutput.resolveInputs(
+            List.of(input), null, DEFAULT_TEST_EXECUTION, Map.of("integerValue", "")
+        );
+
+        // Then — a "missing required" validation error, not a parse error
+        assertThat(values).hasSize(1);
+        assertThat(values.getFirst().exceptions()).isNotNull().isNotEmpty();
+        assertThat(values.getFirst().exceptions().stream().map(InputOutputValidationException::getMessage).findFirst())
+            .isPresent()
+            .hasValueSatisfying(msg -> assertThat(msg).contains("Missing required input"));
+    }
+
+    @Test
+    void shouldKeepEmptyStringForStringInput() {
+        // Given — STRING is a text type; "" must remain a valid value (regression guard)
+        StringInput input = StringInput.builder()
+            .id("textValue")
+            .type(Type.STRING)
+            .required(false)
+            .build();
+
+        // When
+        List<InputAndValue> values = flowInputOutput.resolveInputs(
+            List.of(input), null, DEFAULT_TEST_EXECUTION, Map.of("textValue", "")
+        );
+
+        // Then — "" is preserved as-is for text types
+        assertThat(values).hasSize(1);
+        assertThat(values.getFirst().value()).isEqualTo("");
+        assertThat(values.getFirst().exceptions()).isNull();
+    }
+
+    @Test
+    void shouldResolveEmptyStringAsNullForOptionalFloatInput() {
+        // Given — FLOAT is also a non-text type; same normalization should apply
+        FloatInput input = FloatInput.builder()
+            .id("floatValue")
+            .type(Type.FLOAT)
+            .required(false)
+            .build();
+
+        // When
+        List<InputAndValue> values = flowInputOutput.resolveInputs(
+            List.of(input), null, DEFAULT_TEST_EXECUTION, Map.of("floatValue", "")
+        );
+
+        // Then — resolves to null without throwing
+        assertThat(values).hasSize(1);
+        assertThat(values.getFirst().value()).isNull();
+        assertThat(values.getFirst().exceptions()).isNull();
+    }
+
+    @Test
+    void shouldKeepEmptyStringForEmailInput() {
+        // Given — EMAIL is a text type; "" is allowed by EmailInput's validator pattern (which includes ^$).
+        // An optional EMAIL receiving "" resolves to "" (not null), matching the existing validator design.
+        EmailInput input = EmailInput.builder()
+            .id("emailValue")
+            .type(Type.EMAIL)
+            .required(false)
+            .build();
+
+        // When
+        List<InputAndValue> values = flowInputOutput.resolveInputs(
+            List.of(input), null, DEFAULT_TEST_EXECUTION, Map.of("emailValue", "")
+        );
+
+        // Then — "" is preserved for EMAIL inputs
+        assertThat(values).hasSize(1);
+        assertThat(values.getFirst().value()).isEqualTo("");
+        assertThat(values.getFirst().exceptions()).isNull();
     }
 
     private static class MemoryCompletedPart implements CompletedPart {
