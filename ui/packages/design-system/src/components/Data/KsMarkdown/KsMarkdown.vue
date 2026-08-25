@@ -13,12 +13,13 @@
     import remarkDirective from "remark-directive"
     import type {Root, RootContent} from "mdast"
     import ContentCopy from "vue-material-design-icons/ContentCopy.vue"
-    import CheckCircleOutline from "vue-material-design-icons/CheckCircleOutline.vue"
+    import Check from "vue-material-design-icons/Check.vue"
     import xss, {escapeAttrValue} from "xss"
     import KsAlert from "../../Feedback/KsAlert.vue"
     import KsTable from "../KsTable/KsTable.vue"
     import KsTableColumn from "../KsTable/KsTableColumn.vue"
-    import {getShiki} from "./shikiHighlighter"
+    import {getShiki, loadLanguageOnDemand} from "./shikiHighlighter"
+    import {copyToClipboard} from "../../../utils/clipboard"
 
     const props = withDefaults(
         defineProps<{
@@ -79,6 +80,19 @@
         return result
     }
 
+    // Raw HTML video embeds in docs are YouTube-only; restrict `iframe src` to YouTube's
+    // own embed hosts so the shared xss whitelist below can't be used to embed arbitrary sites.
+    const IFRAME_ALLOWED_HOSTS = ["www.youtube.com", "www.youtube-nocookie.com"]
+
+    function isAllowedIframeSrc(value: string): boolean {
+        try {
+            const url = new URL(value)
+            return url.protocol === "https:" && IFRAME_ALLOWED_HOSTS.includes(url.hostname)
+        } catch {
+            return false
+        }
+    }
+
     function htmlEscape(content: string): string {
         return xss(content, {
             whiteList: {
@@ -95,6 +109,7 @@
                 h1: ["id", "class"], h2: ["id", "class"], h3: ["id", "class"],
                 h4: ["id", "class"], h5: ["id", "class"], h6: ["id", "class"],
                 hr: [],
+                iframe: ["src", "title", "width", "height", "allow", "allowfullscreen", "referrerpolicy", "frameborder", "class"],
                 img: ["src", "alt", "title", "width", "height", "class"],
                 kbd: [],
                 li: ["class"], ol: ["start", "class"], ul: ["class"],
@@ -114,6 +129,12 @@
                 button: ["type", "class", "aria-label"],
             },
             stripIgnoreTag: true,
+            onTagAttr: function (tag: string, name: string, value: string) {
+                if (tag === "iframe" && name === "src" && !isAllowedIframeSrc(value)) {
+                    return ""
+                }
+                return undefined
+            },
             onIgnoreTagAttr: function (_tag: string, name: string, value: string) {
                 if (name.startsWith("data-")) {
                     return name + "=\"" + escapeAttrValue(value) + "\""
@@ -150,7 +171,7 @@
 
         const attrs = parseHtmlAttributes(attrsStr.trim())
         const slots = innerHtml.trim()
-            ? {default: () => [h("span", {innerHTML: innerHtml})]}
+            ? {default: () => [h("span", {innerHTML: props.xssProtection ? htmlEscape(innerHtml) : innerHtml})]}
             : undefined
         return h(component as any, attrs, slots)
     }
@@ -201,14 +222,13 @@
                         title: "Copy to clipboard",
                         onClick: (e: MouseEvent) => {
                             const btn = e.currentTarget as HTMLButtonElement
-                            navigator.clipboard.writeText(value).then(() => {
-                                btn.querySelector(".ks-markdown__copy-btn-ok")?.classList.add("opacity-100")
-                                setTimeout(() => {
-                                    btn.querySelector(".ks-markdown__copy-btn-ok")?.classList.remove("opacity-100")
-                                }, 2000)
+                            copyToClipboard(value).then(() => {
+                                // Swap the copy glyph for the check (not overlay it) for the confirm window.
+                                btn.classList.add("is-copied")
+                                setTimeout(() => btn.classList.remove("is-copied"), 2000)
                             }).catch(() => { /* clipboard unavailable */ })
                         },
-                    }, [h(CheckCircleOutline, {class: "ks-markdown__copy-btn-ok"}), h(ContentCopy)]),
+                    }, [h(Check, {class: "ks-markdown__copy-btn-ok"}), h(ContentCopy, {class: "ks-markdown__copy-btn-icon"})]),
                 ]),
                 highlightedHtml
                     ? h("div", {class: "ks-markdown__code-shiki", innerHTML: highlightedHtml})
@@ -390,9 +410,8 @@
 
             let lang = block.lang
             if (lang && !(hl.getLoadedLanguages() as string[]).includes(lang)) {
-                try {
-                    await hl.loadLanguage(lang as any)
-                } catch {
+                // Not pre-registered: fetch it from Shiki's full bundle, or render as plain text.
+                if (!await loadLanguageOnDemand(hl, lang)) {
                     lang = ""
                 }
             }
@@ -485,7 +504,6 @@
         }
 
         p {
-            margin: 0.75rem 0;
             &:first-child { margin-top: 0; }
             &:last-child { margin-bottom: 0; }
         }
@@ -539,15 +557,26 @@
                         color: var(--kel-text-color-primary);
                     }
 
+                    /* The copy glyph and the confirm check occupy the same cell; only one is
+                       visible at a time (swapped via the .is-copied state), never overlaid. */
                     > * {
                         grid-area: 1 / 1;
+                        transition: opacity 0.15s ease;
                     }
 
                     .ks-markdown__copy-btn-ok {
-                        transition: opacity 0.15s ease;
-                        background: var(--ks-bg-base);
                         color: var(--ks-text-success);
                         opacity: 0;
+                    }
+
+                    &.is-copied {
+                        .ks-markdown__copy-btn-icon {
+                            opacity: 0;
+                        }
+
+                        .ks-markdown__copy-btn-ok {
+                            opacity: 1;
+                        }
                     }
                 }
             }

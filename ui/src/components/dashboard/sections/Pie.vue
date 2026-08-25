@@ -1,6 +1,7 @@
 <template>
     <div class="pie">
-        <div v-if="generated?.results?.length" class="chart">
+        <KsSkeleton v-if="loading && !generated" animated :rows="3" class="empty" />
+        <div v-else-if="generated?.results?.length" class="chart">
             <KsPie
                 ref="ksPieRef"
                 :data="pieData"
@@ -14,7 +15,7 @@
             />
             <div class="pie-center-label">
                 <div class="pie-center-label__total">{{ totalValue }}</div>
-                <div v-if="showSuccessRatio" class="pie-center-label__success">{{ successRatio }}% {{ t("success") }}</div>
+                <div v-if="showSuccessRatio" class="pie-center-label__success">{{ successRatio }}% {{ $t("success") }}</div>
             </div>
         </div>
         <KsNoData v-else class="empty" />
@@ -32,23 +33,22 @@
 <script setup lang="ts">
     import {computed, ref, watch} from "vue"
     import {useRoute} from "vue-router"
-    import {useI18n} from "vue-i18n"
 
     import moment from "moment"
-    import {KsPie, ChartFeature, TooltipType, durationUtils, type KsChartSeriesItem} from "@kestra-io/design-system"
+    import {KsPie, KsSkeleton, ChartFeature, TooltipType, durationUtils, type KsChartSeriesItem} from "@kestra-io/design-system"
 
     import {Chart, useChartGenerator} from "../composables/useDashboards"
     import {getConsistentHEXColor} from "../composables/charts"
     import {useChartDrillDown} from "../composables/chartDrillDown"
     import ChartLegend from "./ChartLegend.vue"
-    import {FilterObject} from "../../../utils/filters"
+    import {QueryFilter} from "@kestra-io/kestra-sdk"
 
     defineOptions({inheritAttrs: false})
 
     const props = withDefaults(defineProps<{
         dashboardId?: string;
         chart: Chart;
-        filters?: FilterObject[];
+        filters?: QueryFilter[];
         showDefault?: boolean;
     }>(), {
         dashboardId: undefined,
@@ -57,7 +57,6 @@
     })
 
     const route = useRoute()
-    const {t} = useI18n()
 
     const {drillDown} = useChartDrillDown(props.chart)
 
@@ -75,7 +74,7 @@
     }, {})
 
     const ksPieRef = ref<InstanceType<typeof KsPie> | null>(null)
-    const {data: generated, generate} = useChartGenerator(props.dashboardId, props)
+    const {data: generated, loading, generate} = useChartGenerator(props.dashboardId, props)
 
     function parseValue(value: unknown): string {
         const date = moment(value as moment.MomentInput, moment.ISO_8601, true)
@@ -132,7 +131,7 @@
 
     const dimensionColumn = computed(() => {
         const dimensionKey = aggregator.field?.key
-        return (dimensionKey ? columns[dimensionKey] : undefined) as {field?: string; labelKey?: string} | undefined
+        return (dimensionKey ? columns[dimensionKey] : undefined) as {field?: string; key?: string} | undefined
     })
 
     function onSegmentClick(params: any) {
@@ -192,7 +191,7 @@
         }
 
         &__success {
-            font-size: clamp(0.5rem, 4cqw, var(--ks-font-size-2xs));
+            font-size: var(--ks-font-size-2xs);
             color: var(--ks-text-success);
         }
     }

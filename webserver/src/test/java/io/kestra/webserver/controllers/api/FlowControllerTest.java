@@ -9,8 +9,6 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
-import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.zip.ZipFile;
 
@@ -18,12 +16,10 @@ import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.slf4j.event.Level;
 
 import com.google.common.collect.ImmutableList;
 
 import io.kestra.core.Helpers;
-import io.kestra.core.junit.annotations.FlakyTest;
 import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.models.Label;
 import io.kestra.core.models.flows.*;
@@ -36,7 +32,6 @@ import io.kestra.core.models.topologies.FlowRelation;
 import io.kestra.core.models.topologies.FlowTopology;
 import io.kestra.core.models.topologies.FlowTopologyGraph;
 import io.kestra.core.models.validations.ValidateConstraintViolation;
-import io.kestra.core.repositories.ExecutionRepositoryInterface;
 import io.kestra.core.repositories.FlowTopologyRepositoryInterface;
 import io.kestra.core.repositories.LocalFlowRepositoryLoader;
 import io.kestra.core.serializers.YamlParser;
@@ -47,9 +42,14 @@ import io.kestra.jdbc.repository.AbstractJdbcFlowRepository;
 import io.kestra.plugin.core.debug.Return;
 import io.kestra.plugin.core.flow.Sequential;
 import io.kestra.webserver.controllers.domain.IdWithNamespace;
+import io.kestra.webserver.models.flows.SourceSearchReplaceApplyRequest;
+import io.kestra.webserver.models.flows.SourceSearchReplaceApplyResponse;
+import io.kestra.webserver.models.flows.SourceSearchReplaceLineRequest;
+import io.kestra.webserver.models.flows.SourceSearchReplacePreviewRequest;
+import io.kestra.webserver.models.flows.SourceSearchReplacePreviewResponse;
+import io.kestra.webserver.models.flows.SourceSearchResult;
 import io.kestra.webserver.responses.BulkResponse;
 import io.kestra.webserver.responses.PagedResults;
-import io.kestra.webserver.utils.RequestUtils;
 
 import io.micronaut.core.type.Argument;
 import io.micronaut.http.*;
@@ -64,6 +64,7 @@ import static io.kestra.core.tenant.TenantService.MAIN_TENANT;
 import static io.micronaut.http.HttpRequest.*;
 import static io.micronaut.http.HttpStatus.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.everyItem;
 import static org.hamcrest.Matchers.nullValue;
@@ -219,6 +220,151 @@ class FlowControllerTest {
                 .getTotal()
         )
             .isEqualTo(Helpers.FLOWS_COUNT - 1); // all except io.kestra.tests2
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void searchFlowsBySourceCodeWithRegexOption() {
+        String namespace = "io.kestra.sourcesearch.regex";
+        createSourceSearchFlow(namespace, "regex-flow", "unique-marker-alpha");
+        createSourceSearchFlow(namespace, "regex-flow-2", "no-match-here");
+
+        PagedResults<SourceSearchResult> results = client.toBlocking().retrieve(
+            HttpRequest.GET(FLOW_PATH + "/source?q=" + URLEncoder.encode("unique-marker-\\w+", StandardCharsets.UTF_8) + "&regex=true&namespace=" + namespace),
+            Argument.of(PagedResults.class, SourceSearchResult.class)
+        );
+
+        assertThat(results.getResults()).hasSize(1);
+        assertThat(results.getResults().getFirst().id()).isEqualTo("regex-flow");
+        assertThat(results.getResults().getFirst().editable()).isTrue();
+        assertThat(results.getResults().getFirst().matches()).hasSize(1);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void searchFlowsBySourceCodeWithCaseSensitiveOption() {
+        String namespace = "io.kestra.sourcesearch.case";
+        createSourceSearchFlow(namespace, "case-flow-upper", "MARKERCASE");
+        createSourceSearchFlow(namespace, "case-flow-lower", "markercase");
+
+        PagedResults<SourceSearchResult> caseSensitive = client.toBlocking().retrieve(
+            HttpRequest.GET(FLOW_PATH + "/source?q=MARKERCASE&caseSensitive=true&namespace=" + namespace),
+            Argument.of(PagedResults.class, SourceSearchResult.class)
+        );
+
+        assertThat(caseSensitive.getResults()).hasSize(1);
+        assertThat(caseSensitive.getResults().getFirst().id()).isEqualTo("case-flow-upper");
+    }
+
+    @Test
+    void shouldReturnBadRequestForInvalidRegexQuery() {
+        assertThatThrownBy(
+            () -> client.toBlocking().retrieve(
+                HttpRequest.GET(FLOW_PATH + "/source?q=" + URLEncoder.encode("concurrency:(\\s*limit:", StandardCharsets.UTF_8) + "&regex=true")
+            )
+        )
+            .isInstanceOf(HttpClientResponseException.class)
+            .satisfies(e -> assertThat(((HttpClientResponseException) e).getStatus().getCode()).isEqualTo(HttpStatus.BAD_REQUEST.getCode()));
+    }
+
+    @Test
+    void shouldPreviewAndApplySourceSearchReplace() {
+        String namespace = "io.kestra.sourcesearch.replace";
+        String id = "replace-flow";
+        createSourceSearchFlow(namespace, id, "legacy-value-here");
+
+        SourceSearchReplacePreviewResponse preview = client.toBlocking().retrieve(
+            HttpRequest.POST(FLOW_PATH + "/source/replace/preview", new SourceSearchReplacePreviewRequest("legacy-value", false, false, false, namespace, null, "new-value")),
+            SourceSearchReplacePreviewResponse.class
+        );
+
+        assertThat(preview.totalMatches()).isEqualTo(1);
+        assertThat(preview.totalFlows()).isEqualTo(1);
+        assertThat(preview.editableFlowCount()).isEqualTo(1);
+        assertThat(preview.flows().getFirst().matches().getFirst().before()).contains("legacy-value-here");
+        assertThat(preview.flows().getFirst().matches().getFirst().after()).contains("new-value-here");
+
+        FlowWithSource beforeApply = client.toBlocking().retrieve(HttpRequest.GET(FLOW_PATH + "/" + namespace + "/" + id + "?source=true"), FlowWithSource.class);
+        assertThat(beforeApply.getSource()).contains("legacy-value-here");
+
+        SourceSearchReplaceApplyResponse apply = client.toBlocking().retrieve(
+            HttpRequest.POST(
+                FLOW_PATH + "/source/replace/apply",
+                new SourceSearchReplaceApplyRequest("legacy-value", false, false, false, null, "new-value", List.of(new IdWithNamespace(namespace, id)))
+            ),
+            SourceSearchReplaceApplyResponse.class
+        );
+
+        assertThat(apply.updated()).hasSize(1);
+        assertThat(apply.updated().getFirst().getSource()).contains("new-value-here");
+        assertThat(apply.skipped()).isEmpty();
+
+        FlowWithSource afterApply = client.toBlocking().retrieve(HttpRequest.GET(FLOW_PATH + "/" + namespace + "/" + id + "?source=true"), FlowWithSource.class);
+        assertThat(afterApply.getSource()).contains("new-value-here");
+        assertThat(afterApply.getSource()).doesNotContain("legacy-value-here");
+    }
+
+    @Test
+    void shouldReturnBadRequestForInvalidReplacementBackreferenceOnPreview() {
+        String namespace = "io.kestra.sourcesearch.badbackref.preview";
+        createSourceSearchFlow(namespace, "badbackref-flow", "aaa");
+
+        assertThatThrownBy(
+            () -> client.toBlocking().retrieve(
+                HttpRequest.POST(FLOW_PATH + "/source/replace/preview", new SourceSearchReplacePreviewRequest("(a)", false, false, true, namespace, null, "$9"))
+            )
+        )
+            .isInstanceOf(HttpClientResponseException.class)
+            .satisfies(e -> assertThat(((HttpClientResponseException) e).getStatus().getCode()).isEqualTo(HttpStatus.BAD_REQUEST.getCode()));
+    }
+
+    @Test
+    void shouldReturnBadRequestForInvalidReplacementBackreferenceOnApply() {
+        String namespace = "io.kestra.sourcesearch.badbackref.apply";
+        String id = "badbackref-flow";
+        createSourceSearchFlow(namespace, id, "aaa");
+
+        assertThatThrownBy(
+            () -> client.toBlocking().retrieve(
+                HttpRequest.POST(
+                    FLOW_PATH + "/source/replace/apply",
+                    new SourceSearchReplaceApplyRequest("(a)", false, false, true, null, "$9", List.of(new IdWithNamespace(namespace, id)))
+                )
+            )
+        )
+            .isInstanceOf(HttpClientResponseException.class)
+            .satisfies(e -> assertThat(((HttpClientResponseException) e).getStatus().getCode()).isEqualTo(HttpStatus.BAD_REQUEST.getCode()));
+    }
+
+    @Test
+    void shouldReturnBadRequestForInvalidReplacementBackreferenceOnLine() {
+        String namespace = "io.kestra.sourcesearch.badbackref.line";
+        String id = "badbackref-flow";
+        createSourceSearchFlow(namespace, id, "aaa");
+
+        assertThatThrownBy(
+            () -> client.toBlocking().retrieve(
+                HttpRequest.POST(
+                    FLOW_PATH + "/source/replace/line",
+                    new SourceSearchReplaceLineRequest("(a)", false, false, true, "$9", namespace, id, 3, 13)
+                )
+            )
+        )
+            .isInstanceOf(HttpClientResponseException.class)
+            .satisfies(e -> assertThat(((HttpClientResponseException) e).getStatus().getCode()).isEqualTo(HttpStatus.BAD_REQUEST.getCode()));
+    }
+
+    private void createSourceSearchFlow(String namespace, String id, String description) {
+        String source = """
+            id: %s
+            namespace: %s
+            description: %s
+            tasks:
+              - id: task
+                type: io.kestra.plugin.core.debug.Return
+                format: test
+            """.formatted(id, namespace, description);
+        client.toBlocking().exchange(HttpRequest.POST(FLOW_PATH, source).contentType(MediaType.APPLICATION_YAML_TYPE), FlowWithSource.class);
     }
 
     @Test
@@ -578,7 +724,6 @@ class FlowControllerTest {
         assertThat(e.getResponse().getBody(String.class).get()).contains("Required QueryValue [revisions] not specified");
     }
 
-    @FlakyTest(description = "CI load can cause ReadTimeoutException instead of HttpClientResponseException on PUT to non-existent flow")
     @Test
     void updateFlowFlowFromJson() {
         String flowId = IdUtils.create();
@@ -654,6 +799,150 @@ class FlowControllerTest {
     }
 
     @Test
+    void updateFlowAsDraftWithUnrecognizedProperty() {
+        // Regression: updating a draft with an unknown task property should return 200, not 422.
+        String flowId = IdUtils.create();
+        String validSource = """
+            id: %s
+            namespace: %s
+            tasks:
+              - id: log
+                type: io.kestra.plugin.core.log.Log
+                message: hello
+            """.formatted(flowId, TEST_NAMESPACE);
+
+        client.toBlocking().retrieve(POST("/api/v1/main/flows", validSource).contentType(MediaType.APPLICATION_YAML), FlowWithSource.class);
+
+        String draftSource = """
+            id: %s
+            namespace: %s
+            tasks:
+              - id: log
+                type: io.kestra.plugin.core.log.Log
+                message: hello
+                unknownProp: someValue
+            """.formatted(flowId, TEST_NAMESPACE);
+
+        FlowWithSource result = client.toBlocking().retrieve(
+            PUT("/api/v1/main/flows/" + TEST_NAMESPACE + "/" + flowId + "?draft=true", draftSource).contentType(MediaType.APPLICATION_YAML),
+            FlowWithSource.class
+        );
+
+        assertThat(result.isDraft()).isTrue();
+        assertThat(result.getSource()).contains("unknownProp");
+    }
+
+    @Test
+    void updateFlowAsDraftWithInvalidYaml() {
+        // Regression: updating a draft with unparsable YAML should return 200, not 422.
+        String flowId = IdUtils.create();
+        String validSource = """
+            id: %s
+            namespace: %s
+            tasks:
+              - id: log
+                type: io.kestra.plugin.core.log.Log
+                message: hello
+            """.formatted(flowId, TEST_NAMESPACE);
+
+        client.toBlocking().retrieve(POST("/api/v1/main/flows", validSource).contentType(MediaType.APPLICATION_YAML), FlowWithSource.class);
+
+        // Syntactically broken YAML (unclosed bracket)
+        String brokenSource = """
+            id: %s
+            namespace: %s
+            tasks:
+              - id: log
+                type: io.kestra.plugin.core.log.Log
+                message: [unclosed
+            """.formatted(flowId, TEST_NAMESPACE);
+
+        FlowWithSource result = client.toBlocking().retrieve(
+            PUT("/api/v1/main/flows/" + TEST_NAMESPACE + "/" + flowId + "?draft=true", brokenSource).contentType(MediaType.APPLICATION_YAML),
+            FlowWithSource.class
+        );
+
+        assertThat(result.isDraft()).isTrue();
+        assertThat(result.getSource()).contains("unclosed");
+    }
+
+    @Test
+    void createFlowAsDraftWithUnrecognizedProperty() {
+        String flowId = IdUtils.create();
+        // unknown task property: a constraint violation that a draft is allowed to carry
+        String draftSource = """
+            id: %s
+            namespace: %s
+            tasks:
+              - id: log
+                type: io.kestra.plugin.core.log.Log
+                message: hello
+                unknownProp: someValue
+            """.formatted(flowId, TEST_NAMESPACE);
+
+        FlowWithSource result = client.toBlocking().retrieve(
+            POST("/api/v1/main/flows?draft=true", draftSource).contentType(MediaType.APPLICATION_YAML),
+            FlowWithSource.class
+        );
+
+        assertThat(result.isDraft())
+            .as("creating a draft with an unknown property is accepted (not 422), unlike a non-draft create")
+            .isTrue();
+        assertThat(result.getSource())
+            .as("the verbatim invalid source is preserved on the created draft")
+            .contains("unknownProp");
+    }
+
+    @Test
+    void createFlowAsDraftWithMissingTasks() {
+        String flowId = IdUtils.create();
+        // no tasks: violates @NotEmpty, but the identity (namespace/id) is still parseable
+        String draftSource = """
+            id: %s
+            namespace: %s
+            """.formatted(flowId, TEST_NAMESPACE);
+
+        FlowWithSource result = client.toBlocking().retrieve(
+            POST("/api/v1/main/flows?draft=true", draftSource).contentType(MediaType.APPLICATION_YAML),
+            FlowWithSource.class
+        );
+
+        assertThat(result.isDraft())
+            .as("a constraint-invalid (no-tasks) flow can be created as a draft, validation is deferred to execution")
+            .isTrue();
+        assertThat(result.getId())
+            .as("the draft is persisted under the namespace/id read from the raw source")
+            .isEqualTo(flowId);
+    }
+
+    @Test
+    void createFlowAsDraftWithUnparsableYamlIsRejected() {
+        // Syntactically broken YAML (unclosed bracket) - the identity cannot be extracted.
+        // Unlike updateFlow (which reads namespace/id from the URL), createFlow has no other source
+        // of identity, so a flow cannot be persisted and the request must be rejected.
+        String brokenSource = """
+            id: %s
+            namespace: %s
+            tasks:
+              - id: log
+                type: io.kestra.plugin.core.log.Log
+                message: [unclosed
+            """.formatted(IdUtils.create(), TEST_NAMESPACE);
+
+        HttpClientResponseException exception = assertThrows(
+            HttpClientResponseException.class,
+            () -> client.toBlocking().retrieve(
+                POST("/api/v1/main/flows?draft=true", brokenSource).contentType(MediaType.APPLICATION_YAML),
+                FlowWithSource.class
+            )
+        );
+
+        assertThat(exception.getStatus().getCode())
+            .as("a create-draft whose YAML is too broken to extract namespace/id is rejected, not silently persisted")
+            .isEqualTo(UNPROCESSABLE_ENTITY.getCode());
+    }
+
+    @Test
     void listDistinctNamespaces() {
         List<String> namespaces = client.toBlocking().retrieve(
             HttpRequest.GET("/api/v1/main/flows/distinct-namespaces"), Argument.listOf(String.class)
@@ -695,7 +984,6 @@ class FlowControllerTest {
         assertThat(e.getStatus().getCode()).isEqualTo(UNPROCESSABLE_ENTITY.getCode());
     }
 
-    @FlakyTest(description = "CI load can cause ReadTimeoutException instead of HttpClientResponseException on PUT to non-existent flow")
     @Test
     void updateFlowFlowFromJsonFromString() throws IOException {
         String flow = generateFlowAsString("updatedFlow", TEST_NAMESPACE, "a");
@@ -759,8 +1047,7 @@ class FlowControllerTest {
     }
 
     /**
-     * this is testing legacy > new filters /by-query endpoints, related file is
-     * {@link RequestUtils#getFiltersOrDefaultToLegacyMapping(List, String, String, String, String, Level, ZonedDateTime, ZonedDateTime, List, List, Duration, ExecutionRepositoryInterface.ChildFilter, List, String, String)}
+     * this is testing legacy > new filters /by-query endpoints
      */
     @Test
     void exportFlowsByQueryForANamespace() throws IOException {
@@ -1583,8 +1870,8 @@ class FlowControllerTest {
         String invalidYaml = "this is not valid flow yaml: [[[";
 
         // When / Then — YAML parse errors are wrapped as ConstraintViolationException → 422
-        HttpClientResponseException exception = assertThrows(HttpClientResponseException.class, () ->
-            client.toBlocking().retrieve(
+        HttpClientResponseException exception = assertThrows(
+            HttpClientResponseException.class, () -> client.toBlocking().retrieve(
                 HttpRequest.POST(FLOW_PATH + "/expressions", invalidYaml)
                     .contentType("application/x-yaml"),
                 Argument.mapOf(String.class, List.class)

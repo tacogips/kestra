@@ -16,12 +16,12 @@
                 <ChevronRight v-else />
             </KsIcon>
         </div>
-        <div class="task-icon d-none d-md-inline-block me-1">
-            <KsTaskIcon
+        <div class="task-icon d-none d-md-inline-block">
+            <TaskIcon
                 :cls="taskType(currentTaskRun)"
                 v-if="taskType(currentTaskRun)"
                 onlyIcon
-                :icons="pluginsStore.icons"
+                :loadIcon="pluginsStore.loadIcon"
             />
         </div>
 
@@ -31,14 +31,14 @@
         >
             <KsTooltip>
                 <template #content>
-                    {{ t("from") }} :
+                    {{ $t("from") }} :
                     {{ dateFilter(selectedAttempt(currentTaskRun).state.startDate) }}
                     <br>
-                    {{ t("to") }} :
+                    {{ $t("to") }} :
                     {{ dateFilter(selectedAttempt(currentTaskRun).state.endDate) }}
                     <br>
                     <Clock />
-                    <strong>{{ t("duration") }}:</strong>
+                    <strong>{{ $t("duration") }}:</strong>
                     {{ humanizeDuration(selectedAttempt(currentTaskRun).state.duration) }}
                 </template>
                 <span>
@@ -61,7 +61,7 @@
                 size="small"
                 :status="currentTaskRun.state.current"
                 clickable
-                :aria-label="t('filter by status', {status: currentTaskRun.state.current})"
+                :aria-label="$t('filter by status', {status: currentTaskRun.state.current})"
                 @click.stop="navigateToStateFilter(currentTaskRun.state.current)"
             />
         </div>
@@ -87,13 +87,13 @@
             :disabled="!currentTaskRun.attempts || currentTaskRun.attempts?.length <= 1"
         >
             <template #label="{value}">
-                {{ `${t('attempt')} ${(value ?? 0) + 1}/${attempts(currentTaskRun).length}` }}
+                {{ `${$t('attempt')} ${(value ?? 0) + 1}/${attempts(currentTaskRun).length}` }}
             </template>
             <KsOption
                 v-for="(_, index) in attempts(currentTaskRun)"
                 :key="`attempt-${index}-${currentTaskRun.id}`"
                 :value="index"
-                :label="`${t('attempt')} ${index + 1}`"
+                :label="`${$t('attempt')} ${index + 1}`"
             />
         </KsSelect>
 
@@ -111,8 +111,8 @@
 
 <script setup lang="ts">
     import {computed} from "vue"
-    import {useI18n} from "vue-i18n"
-    import {State, KsExecutionStatus, KsTaskIcon} from "@kestra-io/design-system"
+    import {State, KsExecutionStatus} from "@kestra-io/design-system"
+    import TaskIcon from "../plugins/TaskIcon.vue"
     import TaskRunActions from "./TaskRunActions.vue"
     import {useStateFilter} from "../filter/composables/useStateFilter"
     import Clock from "vue-material-design-icons/Clock.vue"
@@ -124,7 +124,6 @@
     import {usePluginsStore} from "../../stores/plugins"
     import {date as dateFilter, humanizeDuration} from "../../utils/filters"
 
-    const {t} = useI18n()
     const pluginsStore = usePluginsStore()
     const {navigateToStateFilter} = useStateFilter()
 
@@ -223,18 +222,15 @@
 </script>
 
 <style scoped lang="scss">
-    .task-duration {
-        padding: .375rem 0;
-    }
-
     .taskrun-header,
     .attempt-header {
         display: flex;
-        gap: .5rem;
-        padding: 0.5rem 1rem;
+        align-items: center;
+        gap: var(--ks-spacing-2);
+        padding: var(--ks-spacing-1) var(--ks-spacing-4);
         border-bottom: 1px solid var(--ks-border-default);
 
-        >* {
+        > * {
             display: flex;
             align-items: center;
         }
@@ -247,6 +243,7 @@
         .task-duration small {
             white-space: nowrap;
             color: var(--ks-text-secondary);
+            line-height: 1;
         }
 
     }
@@ -256,17 +253,16 @@
         padding-left: calc(var(--ks-spacing-4) + var(--depth, 0) * var(--ks-spacing-5));
 
         .task-icon {
-            width: 36px;
-            padding: 6px 6px 6px 0;
-            border-radius: 0.5rem;
-            margin-left: -0.5rem;
+            flex-shrink: 0;
+            width: var(--ks-spacing-6);
+            height: var(--ks-spacing-6);
+            border-radius: var(--ks-radius-base);
         }
 
         .task-id {
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            padding: .375rem 0;
 
             span span {
                 color: var(--ks-text-primary);

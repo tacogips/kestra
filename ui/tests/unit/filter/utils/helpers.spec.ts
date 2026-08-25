@@ -15,6 +15,7 @@ import {
     parseFiltersFromString,
     validStructureSignature,
     pickStarterField,
+    parseFilterKey,
 } from "@kestra-io/design-system"
 import type {FilterGroup, LeafFilterGroup, WrapperGroup} from "@kestra-io/design-system"
 
@@ -68,6 +69,34 @@ describe("Filter Helpers", () => {
                     wrapperLogical: "AND",
                 },
             ])
+        })
+    })
+
+    describe("parseFilterKey", () => {
+        it("splits a root-level key into field and operation", () => {
+            expect(parseFilterKey("filters[namespace][EQUALS]")).toEqual({
+                chain: [], field: "namespace", operation: "EQUALS", subKey: undefined,
+            })
+        })
+
+        it("returns the label sub-key when the key carries one", () => {
+            expect(parseFilterKey("filters[labels][EQUALS][env]")).toEqual({
+                chain: [], field: "labels", operation: "EQUALS", subKey: "env",
+            })
+        })
+
+        it("returns the grouping chain outermost first", () => {
+            expect(parseFilterKey("filters[or][0][and][1][state][EQUALS]")).toEqual({
+                chain: [{logical: "OR", index: 0}, {logical: "AND", index: 1}],
+                field: "state",
+                operation: "EQUALS",
+                subKey: undefined,
+            })
+        })
+
+        it("returns null for a key that is not in the filter format", () => {
+            expect(parseFilterKey("page")).toBeNull()
+            expect(parseFilterKey("filters[namespace]")).toBeNull()
         })
     })
 
