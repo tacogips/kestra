@@ -1,0 +1,10 @@
+allprojects {
+    configurations.configureEach {
+        resolutionStrategy.eachDependency { dependency ->
+            if (dependency.requested.group.startsWith('com.fasterxml.jackson')) {
+                dependency.useVersion(dependency.requested.name == 'jackson-annotations' ? '2.22' : '2.22.4')
+                dependency.because('Remove vulnerable Jackson copies bundled by the Kubernetes plugin.')
+            }
+        }
+    }
+}
