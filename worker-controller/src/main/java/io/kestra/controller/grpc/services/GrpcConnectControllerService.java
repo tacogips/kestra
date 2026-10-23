@@ -60,12 +60,10 @@ public class GrpcConnectControllerService extends ConnectControllerServiceGrpc.C
     }
 
     /**
-     * Resolves the Worker Group id for the connecting worker. OSS always returns
-     * {@link WorkerGroups#DEFAULT_ID}; the EE override resolves it from the authenticated
-     * worker context and may reject the connection by throwing a {@link StatusRuntimeException},
-     * whose status is then returned to the worker as-is.
+     * Resolves the requested Worker Group id, defaulting an absent group to {@link WorkerGroups#DEFAULT_ID}.
+     * EE overrides may reject the connection with a {@link StatusRuntimeException}, which is returned on the observer.
      */
     protected String resolveWorkerGroupId(ConnectRequest request) {
-        return WorkerGroups.DEFAULT_ID;
+        return WorkerGroups.normalize(request.getRequestedWorkerGroupId());
     }
 }

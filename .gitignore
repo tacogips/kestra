@@ -50,6 +50,7 @@ ui-design-system/*.tsbuildinfo
 ### Docker
 /.env
 docker-compose*.overide.yml
+plugins/*.jar
 docker/app/plugins/*.jar
 docker/app/kestra
 docker/app/confs/*.yml
@@ -79,3 +80,5 @@ charts/kestra-starter/charts/
 
 # Local dev server data (embedded H2, namespace files, KV) — never commit
 cli/data/
+.direnv/
+mise.local.toml
