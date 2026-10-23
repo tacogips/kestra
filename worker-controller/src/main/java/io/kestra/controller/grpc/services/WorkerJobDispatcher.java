@@ -58,6 +58,7 @@ import io.kestra.core.worker.MetadataChangePayload;
 import io.kestra.core.worker.QueueSubscription;
 import io.kestra.core.worker.WorkerBroadcastEvent;
 import io.kestra.core.worker.WorkerQueues;
+import io.kestra.core.worker.WorkerRoutingConfiguration;
 
 import io.micronaut.core.annotation.Nullable;
 import jakarta.annotation.PreDestroy;
@@ -116,6 +117,13 @@ public class WorkerJobDispatcher {
     private final ConcurrentHashMap<String, WorkerStreamContext<WorkerJobResponse>> activeStreams = new ConcurrentHashMap<>();
 
     /**
+     * Serializes worker stream registration, replacement, unregistration, and
+     * subscription re-registration so the secondary indices always describe the
+     * active stream map for a worker id.
+     */
+    private final ReentrantLock workerRegistrationLock = new ReentrantLock();
+
+    /**
      * Secondary index: worker IDs by Worker Queue for O(1) Worker Queue lookups.
      * Key: workerQueueId (empty string for default Worker Queue), Value: set of worker IDs
      */
@@ -157,6 +165,9 @@ public class WorkerJobDispatcher {
     private final MetadataChangeListener metadataChangeListener;
 
     private final WorkerQueueResolver workerQueueResolver;
+    private final BroadcastTaskCoordinator broadcastTaskCoordinator;
+    private final Set<String> staticWorkerQueueIds;
+    private final Set<String> registeredWorkerQueueGauges = ConcurrentHashMap.newKeySet();
 
     /**
      * Listeners notified on worker stream lifecycle transitions. Set once at
@@ -180,6 +191,8 @@ public class WorkerJobDispatcher {
         MetricRegistry metricRegistry,
         MetadataChangeListener metadataChangeListener,
         WorkerQueueResolver workerQueueResolver,
+        BroadcastTaskCoordinator broadcastTaskCoordinator,
+        WorkerRoutingConfiguration workerRoutingConfiguration,
         List<WorkerLifecycleListener> lifecycleListeners,
         RunContextLoggerFactory runContextLoggerFactory) {
         this.workerJobEventQueue = workerJobEventQueue;
@@ -189,6 +202,12 @@ public class WorkerJobDispatcher {
         this.metricRegistry = metricRegistry;
         this.metadataChangeListener = metadataChangeListener;
         this.workerQueueResolver = workerQueueResolver;
+        this.broadcastTaskCoordinator = broadcastTaskCoordinator;
+        this.staticWorkerQueueIds = workerRoutingConfiguration == null
+            ? Set.of()
+            : workerRoutingConfiguration.configuredWorkerQueueIds().stream()
+                .map(WorkerJobDispatcher::toDispatchKey)
+                .collect(Collectors.toUnmodifiableSet());
         this.lifecycleListeners = List.copyOf(lifecycleListeners);
         this.runContextLoggerFactory = runContextLoggerFactory;
 
@@ -238,6 +257,7 @@ public class WorkerJobDispatcher {
                     .mapToInt(WorkerStreamContext::getAvailablePermits)
                     .sum()
             );
+            staticWorkerQueueIds.forEach(this::registerWorkerQueueGauges);
 
             // Notify lifecycle listeners that the dispatcher is fully wired. No worker can
             // register yet — the gRPC service that drives registerWorker is built after this
@@ -419,37 +439,62 @@ public class WorkerJobDispatcher {
     public void registerWorker(WorkerStreamContext<WorkerJobResponse> context) {
         checkNotClosed();
 
-        // Add to global index
-        activeStreams.put(context.getWorkerId(), context);
+        workerRegistrationLock.lock();
+        try {
+            checkNotClosed();
 
-        // Track every worker (including those in the default group) in the worker-group
-        // index so that subscription changes can trigger a re-registration via
-        // {@code WORKER_GROUP_SYNC_REQUESTED}. EE persists a configurable default
-        // worker group, so the previous "default is immutable" assumption no longer
-        // holds — workers in that group must also be reachable for reconfiguration.
-        String workerGroupId = context.getWorkerGroupId();
-        workerIdsByWorkerGroup.computeIfAbsent(workerGroupId, k -> ConcurrentHashMap.newKeySet())
-            .add(context.getWorkerId());
+            replaceExistingWorkerStream(context);
 
-        // Register in each subscribed Worker Queue, acquiring locks in consistent order.
-        // Retry on disposed-state races, but cap so a real bug can't spin forever.
-        for (String workerQueueId : sortedWorkerQueueKeys(context)) {
-            int attempts = 0;
-            while (!tryRegisterInWorkerQueue(context, workerQueueId)) {
-                if (++attempts >= REGISTER_MAX_RETRIES) {
-                    throw new IllegalStateException(
-                        "Could not register worker '" + context.getWorkerId()
-                            + "' in Worker Queue '" + WorkerQueues.forLog(workerQueueId)
-                            + "' after " + attempts + " retries (concurrent dispose)"
-                    );
+            // Add to global index
+            activeStreams.put(context.getWorkerId(), context);
+
+            // Track every worker (including those in the default group) in the worker-group
+            // index so that subscription changes can trigger a re-registration via
+            // {@code WORKER_GROUP_SYNC_REQUESTED}. EE persists a configurable default
+            // worker group, so the previous "default is immutable" assumption no longer
+            // holds — workers in that group must also be reachable for reconfiguration.
+            String workerGroupId = context.getWorkerGroupId();
+            workerIdsByWorkerGroup.computeIfAbsent(workerGroupId, k -> ConcurrentHashMap.newKeySet())
+                .add(context.getWorkerId());
+
+            // Register in each subscribed Worker Queue, acquiring locks in consistent order.
+            // Retry on disposed-state races, but cap so a real bug can't spin forever.
+            for (String workerQueueId : sortedWorkerQueueKeys(context)) {
+                int attempts = 0;
+                while (!tryRegisterInWorkerQueue(context, workerQueueId)) {
+                    if (++attempts >= REGISTER_MAX_RETRIES) {
+                        throw new IllegalStateException(
+                            "Could not register worker '" + context.getWorkerId()
+                                + "' in Worker Queue '" + WorkerQueues.forLog(workerQueueId)
+                                + "' after " + attempts + " retries (concurrent dispose)"
+                        );
+                    }
                 }
             }
+        } finally {
+            workerRegistrationLock.unlock();
         }
 
         fireWorkerRegistered(context);
     }
 
     private static final int REGISTER_MAX_RETRIES = 50;
+
+    /**
+     * Drops an already-registered stream for the same worker id before the new stream
+     * is indexed. This keeps queue and worker-group indices aligned when a worker
+     * reconnects before the old gRPC stream reports cancellation.
+     */
+    private void replaceExistingWorkerStream(WorkerStreamContext<WorkerJobResponse> context) {
+        WorkerStreamContext<WorkerJobResponse> previous = activeStreams.get(context.getWorkerId());
+        if (previous == null || previous == context) {
+            return;
+        }
+
+        log.info("Replacing existing stream for worker [{}]", context.getWorkerId());
+        unregisterWorker(previous);
+        previous.complete();
+    }
 
     /**
      * Attempts to register a worker in a single Worker Queue against the current {@link WorkerQueueState}.
@@ -465,7 +510,7 @@ public class WorkerJobDispatcher {
                 // Take responsibility for closing the subscriber to avoid a leak.
                 if (workerQueueStates.remove(workerQueueId, state)) {
                     closeSubscriberQuietly(state.subscriber(), workerQueueId);
-                    removeWorkerQueueGauges(workerQueueId);
+                    removeWorkerQueueGaugesIfDynamic(workerQueueId);
                 }
                 throw new IllegalStateException("WorkerJobDispatcher is closed");
             }
@@ -514,29 +559,7 @@ public class WorkerJobDispatcher {
 
             // Queue-scoped gauges: a Worker Queue can be served by workers from multiple
             // Worker Groups, so worker_group is not a meaningful dimension here.
-            String[] metricTags = metricRegistry.workerQueueTags(workerQueueId);
-            metricRegistry.gauge(
-                MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE,
-                MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE_DESCRIPTION,
-                (Supplier<Integer>) () ->
-                {
-                    Set<String> ids = workerIdsByWorkerQueue.get(workerQueueId);
-                    return ids == null ? 0 : ids.size();
-                },
-                metricTags
-            );
-            metricRegistry.gauge(
-                MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE,
-                MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE_DESCRIPTION,
-                (Supplier<Integer>) () -> getTotalPermitsForWorkerQueue(workerQueueId),
-                metricTags
-            );
-            metricRegistry.gauge(
-                MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT,
-                MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT_DESCRIPTION,
-                (Supplier<Integer>) () -> getWorkersInWorkerQueue(workerQueueId).mapToInt(WorkerStreamContext::getInFlightCount).sum(),
-                metricTags
-            );
+            registerWorkerQueueGauges(workerQueueId);
 
             return new WorkerQueueState(subscriber);
         } catch (Throwable t) {
@@ -562,84 +585,89 @@ public class WorkerJobDispatcher {
     public void unregisterWorker(WorkerStreamContext<WorkerJobResponse> context) {
         Objects.requireNonNull(context, "context must not be null");
 
-        String workerId = context.getWorkerId();
+        workerRegistrationLock.lock();
+        try {
+            String workerId = context.getWorkerId();
 
-        // Atomic compare-and-remove: only proceed if THIS context is still the registered one.
-        // A superseded stale stream must not remove a newer registration for the same workerId.
-        if (!activeStreams.remove(workerId, context)) {
-            log.debug("Ignoring stale unregister for worker [{}]: stream already superseded or unknown", workerId);
-            return;
-        }
-
-        // Release bucket reservations held by any job still in-flight on this stream.
-        // The worker's still-running tasks will deliver their results via
-        // sendWorkerTaskResults independently; on this controller they simply stop
-        // counting toward bucket usage.
-        context.releaseAllInFlightBuckets();
-
-        // Remove from worker group index (mirror of registerWorker — default group included)
-        String workerGroupId = context.getWorkerGroupId();
-        Set<String> workerGroupWorkers = workerIdsByWorkerGroup.get(workerGroupId);
-        if (workerGroupWorkers != null) {
-            workerGroupWorkers.remove(workerId);
-            if (workerGroupWorkers.isEmpty()) {
-                workerIdsByWorkerGroup.remove(workerGroupId);
-            }
-        }
-
-        // Remove from each subscribed Worker Queue, acquiring locks in consistent order
-        for (String workerQueueId : sortedWorkerQueueKeys(context)) {
-            WorkerQueueState state = workerQueueStates.get(workerQueueId);
-            if (state == null) {
-                continue;
+            // Atomic compare-and-remove: only proceed if THIS context is still the registered one.
+            // A superseded stale stream must not remove a newer registration for the same workerId.
+            if (!activeStreams.remove(workerId, context)) {
+                log.debug("Ignoring stale unregister for worker [{}]: stream already superseded or unknown", workerId);
+                return;
             }
 
-            state.lock.lock();
-            try {
-                // If the same worker id has been re-registered on a new stream (HTTP/2
-                // GOAWAY reconnect) and the new context still subscribes to this Task
-                // Queue, the new stream owns the registration and we must leave it alone.
-                WorkerStreamContext<WorkerJobResponse> current = activeStreams.get(workerId);
-                if (current != null && current.subscribedWorkerQueueIds().contains(workerQueueId)) {
-                    log.debug(
-                        "Skipping unregister of worker [{}] from Worker Queue '{}': replaced by fresh registration",
-                        workerId, WorkerQueues.forLog(workerQueueId)
-                    );
+            // Release bucket reservations held by any job still in-flight on this stream.
+            // The worker's still-running tasks will deliver their results via
+            // sendWorkerTaskResults independently; on this controller they simply stop
+            // counting toward bucket usage.
+            context.releaseAllInFlightBuckets();
+
+            // Remove from worker group index (mirror of registerWorker — default group included)
+            String workerGroupId = context.getWorkerGroupId();
+            Set<String> workerGroupWorkers = workerIdsByWorkerGroup.get(workerGroupId);
+            if (workerGroupWorkers != null) {
+                workerGroupWorkers.remove(workerId);
+                if (workerGroupWorkers.isEmpty()) {
+                    workerIdsByWorkerGroup.remove(workerGroupId);
+                }
+            }
+
+            // Remove from each subscribed Worker Queue, acquiring locks in consistent order
+            for (String workerQueueId : sortedWorkerQueueKeys(context)) {
+                WorkerQueueState state = workerQueueStates.get(workerQueueId);
+                if (state == null) {
                     continue;
                 }
 
-                Set<String> workerQueueWorkers = workerIdsByWorkerQueue.get(workerQueueId);
-                if (workerQueueWorkers != null) {
-                    workerQueueWorkers.remove(workerId);
+                state.lock.lock();
+                try {
+                    // If the same worker id has been re-registered on a new stream (HTTP/2
+                    // GOAWAY reconnect) and the new context still subscribes to this Task
+                    // Queue, the new stream owns the registration and we must leave it alone.
+                    WorkerStreamContext<WorkerJobResponse> current = activeStreams.get(workerId);
+                    if (current != null && current.subscribedWorkerQueueIds().contains(workerQueueId)) {
+                        log.debug(
+                            "Skipping unregister of worker [{}] from Worker Queue '{}': replaced by fresh registration",
+                            workerId, WorkerQueues.forLog(workerQueueId)
+                        );
+                        continue;
+                    }
+
+                    Set<String> workerQueueWorkers = workerIdsByWorkerQueue.get(workerQueueId);
+                    if (workerQueueWorkers != null) {
+                        workerQueueWorkers.remove(workerId);
+                    }
+
+                    log.info("Unregistered worker {} from Worker Queue '{}', had {} in-flight jobs", workerId, WorkerQueues.forLog(workerQueueId), context.getInFlightCount());
+                    metricRegistry.counter(
+                        MetricRegistry.METRIC_CONTROLLER_WORKER_UNREGISTERED_TOTAL,
+                        MetricRegistry.METRIC_CONTROLLER_WORKER_UNREGISTERED_TOTAL_DESCRIPTION,
+                        metricRegistry.workerGroupAndQueueTags(context.getWorkerGroupId(), workerQueueId)
+                    ).increment();
+
+                    int remainingWorkers = workerQueueWorkers == null ? 0 : workerQueueWorkers.size();
+
+                    if (remainingWorkers == 0) {
+                        // No more workers - dispose immediately.
+                        // ORDER MATTERS: keep this state in workerQueueStates until after the subscriber and
+                        // gauges are torn down. While the entry remains, a concurrent registerWorker
+                        // for this Worker Queue will block on state.lock instead of creating a parallel
+                        // WorkerQueueState — which would race with our cleanup of workerIdsByWorkerQueue/gauges.
+                        log.info("Disposing subscription for Worker Queue '{}': no workers remaining", WorkerQueues.forLog(workerQueueId));
+                        workerIdsByWorkerQueue.remove(workerQueueId);
+                        closeSubscriberQuietly(state.subscriber(), workerQueueId);
+                        removeWorkerQueueGaugesIfDynamic(workerQueueId);
+                        workerQueueStates.remove(workerQueueId, state);
+                    } else if (!hasAnyPermitsInWorkerQueue(workerQueueId)) {
+                        // Workers exist but no permits - pause
+                        pauseSubscription(state, workerQueueId);
+                    }
+                } finally {
+                    state.lock.unlock();
                 }
-
-                log.info("Unregistered worker {} from Worker Queue '{}', had {} in-flight jobs", workerId, WorkerQueues.forLog(workerQueueId), context.getInFlightCount());
-                metricRegistry.counter(
-                    MetricRegistry.METRIC_CONTROLLER_WORKER_UNREGISTERED_TOTAL,
-                    MetricRegistry.METRIC_CONTROLLER_WORKER_UNREGISTERED_TOTAL_DESCRIPTION,
-                    metricRegistry.workerGroupAndQueueTags(context.getWorkerGroupId(), workerQueueId)
-                ).increment();
-
-                int remainingWorkers = workerQueueWorkers == null ? 0 : workerQueueWorkers.size();
-
-                if (remainingWorkers == 0) {
-                    // No more workers - dispose immediately.
-                    // ORDER MATTERS: keep this state in workerQueueStates until after the subscriber and
-                    // gauges are torn down. While the entry remains, a concurrent registerWorker
-                    // for this Worker Queue will block on state.lock instead of creating a parallel
-                    // WorkerQueueState — which would race with our cleanup of workerIdsByWorkerQueue/gauges.
-                    log.info("Disposing subscription for Worker Queue '{}': no workers remaining", WorkerQueues.forLog(workerQueueId));
-                    workerIdsByWorkerQueue.remove(workerQueueId);
-                    closeSubscriberQuietly(state.subscriber(), workerQueueId);
-                    removeWorkerQueueGauges(workerQueueId);
-                    workerQueueStates.remove(workerQueueId, state);
-                } else if (!hasAnyPermitsInWorkerQueue(workerQueueId)) {
-                    // Workers exist but no permits - pause
-                    pauseSubscription(state, workerQueueId);
-                }
-            } finally {
-                state.lock.unlock();
             }
+        } finally {
+            workerRegistrationLock.unlock();
         }
 
         fireWorkerUnregistered(context);
@@ -745,11 +773,22 @@ public class WorkerJobDispatcher {
                     MetricRegistry.METRIC_CONTROLLER_JOB_KILLED_TOTAL_DESCRIPTION,
                     metricRegistry.workerQueueTags(workerQueueId)
                 ).increment();
-                try {
-                    workerTaskResultQueue.emit(new WorkerTaskResult(workerTask.getTaskRun().withState(State.Type.KILLED)));
-                } catch (QueueException e) {
-                    log.error("Failed to emit KILLED result for task '{}': {}", job.uid(), e.getMessage(), e);
-                }
+                TaskRun killedTaskRun = workerTask.getTaskRun().withState(State.Type.KILLED);
+                WorkerJobEvent retryEvent = workerTask.getTaskRun().getBroadcast() == null
+                    ? null
+                    : WorkerJobEvent.of(workerTask.withTaskRun(killedTaskRun), event.workerQueueId());
+                emitWorkerTaskResult(new WorkerTaskResult(killedTaskRun), retryEvent);
+                return;
+            }
+
+            // Broadcast handling: a per-worker copy is pinned to its target worker; an original
+            // broadcast task is fanned out into one pinned copy per worker of the Worker Queue.
+            if (workerTask.getTaskRun().getBroadcast() != null) {
+                handleBroadcastCopyJob(workerQueueId, event, workerTask);
+                return;
+            }
+            if (broadcastTaskCoordinator.isBroadcastTask(workerTask, workerQueueId)) {
+                handleBroadcastFanOut(workerQueueId, event, workerTask);
                 return;
             }
         }
@@ -790,6 +829,166 @@ public class WorkerJobDispatcher {
         }
     }
 
+    /**
+     * Fans an original broadcast task out into one pinned copy per worker currently registered
+     * for the Worker Queue. The copies are re-emitted to the same Worker Queue and dispatched
+     * individually by {@link #handleBroadcastCopyJob}, so each copy keeps the durable
+     * queue/state-store guarantees of a regular job.
+     */
+    private void handleBroadcastFanOut(String workerQueueId, WorkerJobEvent event, WorkerTask workerTask) {
+        WorkerQueueState state = workerQueueStates.get(workerQueueId);
+        if (state == null) {
+            log.error("No state for Worker Queue '{}', re-queuing broadcast job {}", WorkerQueues.forLog(workerQueueId), workerTask.uid());
+            requeue(event);
+            return;
+        }
+
+        state.lock.lock();
+        try {
+            List<String> workerIds = getWorkersInWorkerQueue(workerQueueId)
+                .map(WorkerStreamContext::getWorkerId)
+                .sorted()
+                .toList();
+            if (workerIds.isEmpty()) {
+                // Same handling as no capacity: wait for workers to (re)connect.
+                pauseSubscription(state, workerQueueId);
+                log.debug("No workers for broadcast task '{}' in Worker Queue '{}', re-queuing", workerTask.uid(), WorkerQueues.forLog(workerQueueId));
+                requeue(event);
+                return;
+            }
+
+            List<WorkerTask> copies = broadcastTaskCoordinator.fanOut(workerTask, workerIds);
+            if (copies.isEmpty()) {
+                // Duplicate delivery of an already fanned-out job: drop it.
+                return;
+            }
+
+            log.info(
+                "Broadcasting task '{}' to {} worker(s) of Worker Queue '{}'",
+                workerTask.uid(), copies.size(), WorkerQueues.forLog(workerQueueId)
+            );
+            for (WorkerTask copy : copies) {
+                try {
+                    workerJobEventQueue.emit(event.key(), WorkerJobEvent.of(copy, event.workerQueueId()));
+                } catch (QueueException e) {
+                    log.error(
+                        "Failed to emit broadcast copy '{}' for task '{}': {}",
+                        copy.uid(), workerTask.uid(), e.getMessage(), e
+                    );
+                    emitUndeliverableBroadcastCopy(copy, event.workerQueueId());
+                }
+            }
+        } finally {
+            state.lock.unlock();
+        }
+    }
+
+    /**
+     * Dispatches a broadcast per-worker copy to the specific worker it is pinned to. If the
+     * target worker is no longer registered for the Worker Queue, the copy is failed (which may
+     * complete the broadcast aggregation). If the target has no capacity, the job is re-queued
+     * and the subscription paused until the next permit update.
+     */
+    private void handleBroadcastCopyJob(String workerQueueId, WorkerJobEvent event, WorkerTask workerTask) {
+        if (workerTask.getTaskRun().getState().isTerminated()) {
+            // Dispatcher-generated terminal copies are durable retry envelopes for aggregate
+            // result emission. They must never be executed by a worker again.
+            emitWorkerTaskResult(new WorkerTaskResult(workerTask.getTaskRun()), event);
+            return;
+        }
+
+        String targetWorkerId = workerTask.getTaskRun().getBroadcast().targetWorkerId();
+
+        WorkerQueueState state = workerQueueStates.get(workerQueueId);
+        if (state == null) {
+            log.error("No state for Worker Queue '{}', re-queuing broadcast copy {}", WorkerQueues.forLog(workerQueueId), workerTask.uid());
+            requeue(event);
+            return;
+        }
+
+        state.lock.lock();
+        try {
+            WorkerStreamContext<WorkerJobResponse> context = activeStreams.get(targetWorkerId);
+            Set<String> queueWorkers = workerIdsByWorkerQueue.get(workerQueueId);
+            if (context == null || queueWorkers == null || !queueWorkers.contains(targetWorkerId)) {
+                log.warn(
+                    "Target worker '{}' of broadcast copy '{}' is no longer registered for Worker Queue '{}': failing the copy",
+                    targetWorkerId, workerTask.uid(), WorkerQueues.forLog(workerQueueId)
+                );
+                emitUndeliverableBroadcastCopy(workerTask, event.workerQueueId());
+                return;
+            }
+
+            String bucket = null;
+            if (context.getAvailablePermits() > 0 && context.hasCapacityForQueue(workerQueueId) && context.tryConsumePermit()) {
+                bucket = context.tryReserveBucket(workerQueueId);
+                if (bucket == null) {
+                    context.addPermits(1);
+                }
+            }
+            if (bucket == null) {
+                // Target worker exists but has no capacity right now. Pause and re-queue; the
+                // next permit update on this Worker Queue resumes the subscription and retries.
+                pauseSubscription(state, workerQueueId);
+                log.debug(
+                    "Target worker '{}' has no capacity for broadcast copy '{}', re-queuing",
+                    targetWorkerId, workerTask.uid()
+                );
+                requeue(event);
+                return;
+            }
+
+            dispatchJobToWorker(context, workerTask, event, workerQueueId, bucket);
+
+            if (!hasAnyPermitsInWorkerQueue(workerQueueId)) {
+                pauseSubscription(state, workerQueueId);
+            }
+        } finally {
+            state.lock.unlock();
+        }
+    }
+
+    /**
+     * Records an undeliverable broadcast copy and supplies a terminal copy event that can retry
+     * aggregate result emission durably without executing the task.
+     */
+    private void emitUndeliverableBroadcastCopy(WorkerTask copy, String workerQueueId) {
+        WorkerTask failedCopy = copy.withTaskRun(copy.getTaskRun().fail());
+        emitWorkerTaskResult(
+            new WorkerTaskResult(failedCopy.getTaskRun()),
+            WorkerJobEvent.of(failedCopy, workerQueueId)
+        );
+    }
+
+    /**
+     * Emits a worker task result produced by the dispatcher itself, first routing it through the
+     * broadcast coordinator so results carrying a broadcast marker are aggregated (or mapped back
+     * to their original task run) instead of leaking per-copy task run ids to the executor.
+     */
+    private void emitWorkerTaskResult(WorkerTaskResult result) {
+        emitWorkerTaskResult(result, null);
+    }
+
+    /**
+     * Emits a dispatcher-generated result and optionally re-queues a terminal broadcast copy as
+     * a durable retry envelope when the result queue is temporarily unavailable.
+     */
+    private void emitWorkerTaskResult(WorkerTaskResult result, @Nullable WorkerJobEvent retryEvent) {
+        broadcastTaskCoordinator.onResult(result).ifPresent(toEmit ->
+        {
+            try {
+                workerTaskResultQueue.emit(toEmit);
+                broadcastTaskCoordinator.acknowledgeResultEmission(toEmit);
+            } catch (QueueException e) {
+                broadcastTaskCoordinator.releaseResultEmission(toEmit);
+                log.error("Failed to emit result for task run '{}': {}", toEmit.getTaskRun().getId(), e.getMessage(), e);
+                if (retryEvent != null) {
+                    requeue(retryEvent);
+                }
+            }
+        });
+    }
+
     private void handleDeserializationError(DeserializationException deserializationException) {
         if (deserializationException.getRecord() != null) {
             try {
@@ -800,7 +999,7 @@ public class WorkerJobDispatcher {
                     if ("task".equals(type)) {
                         // try to deserialize the taskRun to fail it
                         var taskRun = MAPPER.treeToValue(job.get("taskRun"), TaskRun.class);
-                        this.workerTaskResultQueue.emit(new WorkerTaskResult(taskRun.fail()));
+                        emitWorkerTaskResult(new WorkerTaskResult(taskRun.fail()));
                     } else if ("trigger".equals(type)) {
                         // try to deserialize the triggerContext to fail it
                         var triggerContext = MAPPER.treeToValue(job.get("triggerContext"), TriggerContext.class);
@@ -810,7 +1009,7 @@ public class WorkerJobDispatcher {
                         this.triggerEventQueue.send(workerTriggerResult);
                     }
                 }
-            } catch (IOException | QueueException e) {
+            } catch (IOException e) {
                 // ignore the message if we cannot do anything about it
                 log.error("Unexpected exception when trying to handle a deserialization error", e);
             }
@@ -1049,11 +1248,11 @@ public class WorkerJobDispatcher {
                 oversizedPayloadMessage("task", context.getWorkerId(), payloadSize, workerLimit)
             );
 
-            try {
-                workerTaskResultQueue.emit(new WorkerTaskResult(workerTask.getTaskRun().fail()));
-            } catch (QueueException e) {
-                log.error("Failed to emit FAILED result for oversized job {}: {}", job.uid(), e.getMessage(), e);
-            }
+            TaskRun failedTaskRun = workerTask.getTaskRun().fail();
+            WorkerJobEvent retryEvent = workerTask.getTaskRun().getBroadcast() == null
+                ? null
+                : WorkerJobEvent.of(workerTask.withTaskRun(failedTaskRun), dispatchWorkerQueueId);
+            emitWorkerTaskResult(new WorkerTaskResult(failedTaskRun), retryEvent);
         } else if (job instanceof WorkerTrigger workerTrigger) {
             emitJobLog(
                 runContextLoggerFactory.create(workerTrigger.triggerId(), workerTrigger.getTrigger()),
@@ -1138,6 +1337,47 @@ public class WorkerJobDispatcher {
                 .gauges()
                 .forEach(metricRegistry::removeMeter);
         }
+        registeredWorkerQueueGauges.remove(workerQueueId);
+    }
+
+    private void removeWorkerQueueGaugesIfDynamic(String workerQueueId) {
+        if (!staticWorkerQueueIds.contains(workerQueueId)) {
+            removeWorkerQueueGauges(workerQueueId);
+        }
+    }
+
+    private void registerWorkerQueueGauges(String workerQueueId) {
+        if (!registeredWorkerQueueGauges.add(workerQueueId)) {
+            return;
+        }
+
+        String[] metricTags = metricRegistry.workerQueueTags(workerQueueId);
+        metricRegistry.gauge(
+            MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE,
+            MetricRegistry.METRIC_CONTROLLER_WORKER_ACTIVE_DESCRIPTION,
+            (Supplier<Integer>) () ->
+            {
+                Set<String> ids = workerIdsByWorkerQueue.get(workerQueueId);
+                return ids == null ? 0 : ids.size();
+            },
+            metricTags
+        );
+        metricRegistry.gauge(
+            MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE,
+            MetricRegistry.METRIC_CONTROLLER_PERMITS_AVAILABLE_DESCRIPTION,
+            (Supplier<Integer>) () -> getTotalPermitsForWorkerQueue(workerQueueId),
+            metricTags
+        );
+        metricRegistry.gauge(
+            MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT,
+            MetricRegistry.METRIC_CONTROLLER_JOB_INFLIGHT_DESCRIPTION,
+            (Supplier<Integer>) () -> getWorkersInWorkerQueue(workerQueueId).mapToInt(WorkerStreamContext::getInFlightCount).sum(),
+            metricTags
+        );
+    }
+
+    private static String toDispatchKey(String workerQueueId) {
+        return WorkerQueues.isDefault(WorkerQueues.normalize(workerQueueId)) ? "" : WorkerQueues.normalize(workerQueueId);
     }
 
     /**
@@ -1153,107 +1393,117 @@ public class WorkerJobDispatcher {
     public void reRegisterWorker(String workerId, List<QueueSubscription> newSubscriptions) {
         checkNotClosed();
 
-        WorkerStreamContext<WorkerJobResponse> context = activeStreams.get(workerId);
-        if (context == null) {
-            log.warn("Cannot re-register worker [{}]: not found", workerId);
-            return;
-        }
+        WorkerStreamContext<WorkerJobResponse> context;
+        Set<String> toAdd;
+        Set<String> toRemove;
 
-        Set<String> oldWorkerQueueIds = context.subscribedWorkerQueueIds();
-        Set<String> newWorkerQueueIds = newSubscriptions.stream()
-            .map(QueueSubscription::normalizedWorkerQueueId)
-            .collect(Collectors.toCollection(TreeSet::new));
+        workerRegistrationLock.lock();
+        try {
+            context = activeStreams.get(workerId);
+            if (context == null) {
+                log.warn("Cannot re-register worker [{}]: not found", workerId);
+                return;
+            }
 
-        Set<String> toRemove = new TreeSet<>(oldWorkerQueueIds);
-        toRemove.removeAll(newWorkerQueueIds);
-        Set<String> toAdd = new TreeSet<>(newWorkerQueueIds);
-        toAdd.removeAll(oldWorkerQueueIds);
+            Set<String> oldWorkerQueueIds = context.subscribedWorkerQueueIds();
+            Set<String> newWorkerQueueIds = newSubscriptions.stream()
+                .map(QueueSubscription::normalizedWorkerQueueId)
+                .collect(Collectors.toCollection(TreeSet::new));
 
-        // Swap subscriptions before touching the queue maps so an added-queue dispatch
-        // that races the map update sees the new bucket sizes the moment its lookup hits.
-        context.replaceQueueSubscriptions(newSubscriptions);
+            toRemove = new TreeSet<>(oldWorkerQueueIds);
+            toRemove.removeAll(newWorkerQueueIds);
+            toAdd = new TreeSet<>(newWorkerQueueIds);
+            toAdd.removeAll(oldWorkerQueueIds);
 
-        List<String> allAffected = new ArrayList<>(toRemove);
-        allAffected.addAll(toAdd);
-        allAffected.sort(String::compareTo);
+            // Swap subscriptions before touching the queue maps so an added-queue dispatch
+            // that races the map update sees the new bucket sizes the moment its lookup hits.
+            context.replaceQueueSubscriptions(newSubscriptions);
 
-        for (String workerQueueId : allAffected) {
-            if (toRemove.contains(workerQueueId)) {
-                // Remove from this Worker Queue
+            List<String> allAffected = new ArrayList<>(toRemove);
+            allAffected.addAll(toAdd);
+            allAffected.sort(String::compareTo);
+
+            for (String workerQueueId : allAffected) {
+                if (toRemove.contains(workerQueueId)) {
+                    // Remove from this Worker Queue
+                    WorkerQueueState state = workerQueueStates.get(workerQueueId);
+                    if (state == null)
+                        continue;
+
+                    state.lock.lock();
+                    try {
+                        Set<String> workerQueueWorkers = workerIdsByWorkerQueue.get(workerQueueId);
+                        if (workerQueueWorkers != null) {
+                            workerQueueWorkers.remove(workerId);
+                        }
+
+                        log.info("Re-register: removed worker {} from Worker Queue '{}'", workerId, WorkerQueues.forLog(workerQueueId));
+                        metricRegistry.counter(
+                            MetricRegistry.METRIC_CONTROLLER_WORKER_UNREGISTERED_TOTAL,
+                            MetricRegistry.METRIC_CONTROLLER_WORKER_UNREGISTERED_TOTAL_DESCRIPTION,
+                            metricRegistry.workerGroupAndQueueTags(context.getWorkerGroupId(), workerQueueId)
+                        ).increment();
+
+                        int remaining = workerQueueWorkers == null ? 0 : workerQueueWorkers.size();
+                        if (remaining == 0) {
+                            workerQueueStates.remove(workerQueueId);
+                            workerIdsByWorkerQueue.remove(workerQueueId);
+                            closeSubscriberQuietly(state.subscriber(), workerQueueId);
+                            removeWorkerQueueGaugesIfDynamic(workerQueueId);
+                        } else if (!hasAnyPermitsInWorkerQueue(workerQueueId)) {
+                            pauseSubscription(state, workerQueueId);
+                        }
+                    } finally {
+                        state.lock.unlock();
+                    }
+                }
+                if (toAdd.contains(workerQueueId)) {
+                    // Add to this Worker Queue
+                    WorkerQueueState state = getOrCreateWorkerQueueState(workerQueueId);
+                    state.lock.lock();
+                    try {
+                        workerIdsByWorkerQueue.computeIfAbsent(workerQueueId, k -> ConcurrentHashMap.newKeySet())
+                            .add(workerId);
+
+                        log.info("Re-register: added worker {} to Worker Queue '{}'", workerId, WorkerQueues.forLog(workerQueueId));
+                        metricRegistry.counter(
+                            MetricRegistry.METRIC_CONTROLLER_WORKER_REGISTERED_TOTAL,
+                            MetricRegistry.METRIC_CONTROLLER_WORKER_REGISTERED_TOTAL_DESCRIPTION,
+                            metricRegistry.workerGroupAndQueueTags(context.getWorkerGroupId(), workerQueueId)
+                        ).increment();
+
+                        if (context.getAvailablePermits() > 0) {
+                            resumeSubscription(state, workerQueueId);
+                        }
+                    } finally {
+                        state.lock.unlock();
+                    }
+                }
+            }
+
+            // Re-evaluate pause/resume for all Task Queues the worker is now subscribed to.
+            // This is critical when percentages change without adding/removing subscriptions:
+            // the capacity computation (guaranteedCapacity, sharedCapacity) changes
+            // immediately, so a previously-paused subscription may now have capacity.
+            for (String workerQueueId : newWorkerQueueIds) {
                 WorkerQueueState state = workerQueueStates.get(workerQueueId);
-                if (state == null)
+                if (state == null) {
                     continue;
-
+                }
                 state.lock.lock();
                 try {
-                    Set<String> workerQueueWorkers = workerIdsByWorkerQueue.get(workerQueueId);
-                    if (workerQueueWorkers != null) {
-                        workerQueueWorkers.remove(workerId);
-                    }
-
-                    log.info("Re-register: removed worker {} from Worker Queue '{}'", workerId, WorkerQueues.forLog(workerQueueId));
-                    metricRegistry.counter(
-                        MetricRegistry.METRIC_CONTROLLER_WORKER_UNREGISTERED_TOTAL,
-                        MetricRegistry.METRIC_CONTROLLER_WORKER_UNREGISTERED_TOTAL_DESCRIPTION,
-                        metricRegistry.workerGroupAndQueueTags(context.getWorkerGroupId(), workerQueueId)
-                    ).increment();
-
-                    int remaining = workerQueueWorkers == null ? 0 : workerQueueWorkers.size();
-                    if (remaining == 0) {
-                        workerQueueStates.remove(workerQueueId);
-                        workerIdsByWorkerQueue.remove(workerQueueId);
-                        closeSubscriberQuietly(state.subscriber(), workerQueueId);
-                        removeWorkerQueueGauges(workerQueueId);
-                    } else if (!hasAnyPermitsInWorkerQueue(workerQueueId)) {
+                    if (hasAnyPermitsInWorkerQueue(workerQueueId)) {
+                        resumeSubscription(state, workerQueueId);
+                    } else {
                         pauseSubscription(state, workerQueueId);
                     }
                 } finally {
                     state.lock.unlock();
                 }
             }
-            if (toAdd.contains(workerQueueId)) {
-                // Add to this Worker Queue
-                WorkerQueueState state = getOrCreateWorkerQueueState(workerQueueId);
-                state.lock.lock();
-                try {
-                    workerIdsByWorkerQueue.computeIfAbsent(workerQueueId, k -> ConcurrentHashMap.newKeySet())
-                        .add(workerId);
 
-                    log.info("Re-register: added worker {} to Worker Queue '{}'", workerId, WorkerQueues.forLog(workerQueueId));
-                    metricRegistry.counter(
-                        MetricRegistry.METRIC_CONTROLLER_WORKER_REGISTERED_TOTAL,
-                        MetricRegistry.METRIC_CONTROLLER_WORKER_REGISTERED_TOTAL_DESCRIPTION,
-                        metricRegistry.workerGroupAndQueueTags(context.getWorkerGroupId(), workerQueueId)
-                    ).increment();
-
-                    if (context.getAvailablePermits() > 0) {
-                        resumeSubscription(state, workerQueueId);
-                    }
-                } finally {
-                    state.lock.unlock();
-                }
-            }
-        }
-
-        // Re-evaluate pause/resume for all Task Queues the worker is now subscribed to.
-        // This is critical when percentages change without adding/removing subscriptions:
-        // the capacity computation (guaranteedCapacity, sharedCapacity) changes
-        // immediately, so a previously-paused subscription may now have capacity.
-        for (String workerQueueId : newWorkerQueueIds) {
-            WorkerQueueState state = workerQueueStates.get(workerQueueId);
-            if (state == null) {
-                continue;
-            }
-            state.lock.lock();
-            try {
-                if (hasAnyPermitsInWorkerQueue(workerQueueId)) {
-                    resumeSubscription(state, workerQueueId);
-                } else {
-                    pauseSubscription(state, workerQueueId);
-                }
-            } finally {
-                state.lock.unlock();
-            }
+        } finally {
+            workerRegistrationLock.unlock();
         }
 
         fireWorkerSubscriptionsChanged(context, toAdd, toRemove);

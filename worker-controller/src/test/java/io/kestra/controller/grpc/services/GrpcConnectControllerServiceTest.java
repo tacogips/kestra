@@ -53,6 +53,28 @@ class GrpcConnectControllerServiceTest {
             .satisfies(response -> assertThat(response.getWorkerGroupId()).isEqualTo(WorkerGroups.DEFAULT_ID));
     }
 
+    @Test
+    void shouldUseRequestedWorkerGroup() {
+        GrpcConnectControllerService service = new GrpcConnectControllerService(Map::of);
+
+        String result = service.resolveWorkerGroupId(
+            ConnectRequest.newBuilder()
+                .setRequestedWorkerGroupId("gce-a")
+                .build()
+        );
+
+        assertThat(result).isEqualTo("gce-a");
+    }
+
+    @Test
+    void shouldDefaultBlankRequestedWorkerGroup() {
+        GrpcConnectControllerService service = new GrpcConnectControllerService(Map::of);
+
+        String result = service.resolveWorkerGroupId(ConnectRequest.newBuilder().build());
+
+        assertThat(result).isEqualTo(WorkerGroups.DEFAULT_ID);
+    }
+
     private static class RecordingObserver implements StreamObserver<ConnectResponse> {
         private final List<ConnectResponse> responses = new ArrayList<>();
         private Throwable error;

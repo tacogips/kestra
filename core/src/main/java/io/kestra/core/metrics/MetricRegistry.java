@@ -68,6 +68,8 @@ public class MetricRegistry {
     public static final String METRIC_WORKER_TRIGGER_EXECUTION_COUNT_DESCRIPTION = "The total number of triggers evaluated by the Worker";
     public static final String METRIC_WORKER_KILLED_COUNT = "worker.killed.count";
     public static final String METRIC_WORKER_KILLED_COUNT_DESCRIPTION = "The total number of executions killed events received the Worker";
+    public static final String METRIC_WORKER_ROUTING_CONFIGURATION = "worker.routing.configuration";
+    public static final String METRIC_WORKER_ROUTING_CONFIGURATION_DESCRIPTION = "Static worker routing configuration fingerprint; value is 1 and the routing_fingerprint tag carries the SHA-256 fingerprint";
 
     // Controller (WorkerJobDispatcher) metrics
     public static final String METRIC_CONTROLLER_WORKER_ACTIVE = "controller.worker.active";
@@ -167,6 +169,8 @@ public class MetricRegistry {
     public static final String METRIC_SCHEDULER_TRIGGER_EVALUATION_DURATION_DESCRIPTION = "Trigger evaluation duration for trigger executed inside the Scheduler (Schedulable triggers)";
     public static final String METRIC_SCHEDULER_TRIGGER_COUNT = "scheduler.trigger.count";
     public static final String METRIC_SCHEDULER_TRIGGER_COUNT_DESCRIPTION = "Total number of executions triggered by the Scheduler";
+    public static final String METRIC_SCHEDULER_TRIGGER_WORKER_ROUTING_FAILURE_COUNT = "scheduler.trigger.worker.routing.failure.count";
+    public static final String METRIC_SCHEDULER_TRIGGER_WORKER_ROUTING_FAILURE_COUNT_DESCRIPTION = "Total number of trigger evaluations dropped because worker queue routing failed";
     public static final String METRIC_SCHEDULER_TRIGGER_DELAY_DURATION = "scheduler.trigger.delay.duration";
     public static final String METRIC_SCHEDULER_TRIGGER_DELAY_DURATION_DESCRIPTION = "Trigger delay duration inside the Scheduler";
     public static final String METRIC_SCHEDULER_EVALUATE_COUNT = "scheduler.evaluate.count";
@@ -245,12 +249,15 @@ public class MetricRegistry {
 
     public static final String TAG_TASK_TYPE = "task_type";
     public static final String TAG_TRIGGER_TYPE = "trigger_type";
+    public static final String TAG_TRIGGER_ID = "trigger_id";
     public static final String TAG_FLOW_ID = "flow_id";
     public static final String TAG_NAMESPACE_ID = "namespace_id";
     public static final String TAG_STATE = "state";
+    public static final String TAG_REASON = "reason";
     public static final String TAG_ATTEMPT_COUNT = "attempt_count";
     public static final String TAG_WORKER_GROUP = "worker_group";
     public static final String TAG_WORKER_QUEUE = "worker_queue";
+    public static final String TAG_ROUTING_FINGERPRINT = "routing_fingerprint";
     public static final String TAG_QUEUE_NAME = "queue_name";
     public static final String TAG_SSE_TYPE = "sse_type";
     public static final String TAG_TENANT_ID = "tenant_id";

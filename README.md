@@ -51,6 +51,7 @@ Kestra is an open-source, event-driven orchestration platform for data, AI, and 
 - [🚀 Quick Start](#-quick-start)
 - [🧩 Plugin Ecosystem](#-plugin-ecosystem)
 - [📚 Key Concepts](#-key-concepts)
+- [🧭 OSS Worker Group Routing](#-oss-worker-group-routing)
 - [🎨 Build Workflows Visually](#-build-workflows-visually)
 - [🔧 Extensible and Developer-Friendly](#-extensible-and-developer-friendly)
 - [🌐 Join the Community](#-join-the-community)
@@ -191,6 +192,283 @@ Kestra's plugin ecosystem is continually expanding, allowing you to tailor the p
 - **Namespaces:** logical grouping of flows for organization and isolation.
 - **Triggers:** schedule or events that initiate the execution of flows.
 - **Inputs & Variables:** parameters and dynamic data passed into flows and tasks.
+
+---
+
+## 🧭 OSS Worker Group Routing
+
+This fork includes static, configuration-backed worker group routing for OSS deployments. It keeps the upstream OSS worker dispatch path as the default, then adds a routing step only when operators define worker groups and worker queues in `kestra.worker.routing` and a job declares `workerSelector.tags`.
+
+See [OSS Worker Routing](docs/architecture/OSS_WORKER_ROUTING.md) for the full architecture notes, configuration examples, verification steps, and static-routing limitations.
+
+Upstream OSS sequence, unchanged when routing is not configured:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Executor as Executor
+    participant Queue as WorkerJobEvent queue
+    participant Controller as WorkerController
+    participant Worker as Worker process
+
+    Worker->>Controller: open worker job stream(maxConcurrency)
+    Controller-->>Worker: register default OSS subscription
+    Executor->>Queue: emit(default queue, WorkerJobEvent)
+    Queue-->>Controller: job available
+    Controller-->>Worker: dispatch job
+    Worker-->>Controller: job result
+```
+
+Fork-added routing sequence, used only for configured `workerSelector.tags`:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Worker as Worker process
+    participant Connect as Fork ConnectController gRPC
+    participant Controller as WorkerController
+    participant Resolver as Fork ConfiguredWorkerQueueResolver
+    participant Executor as Executor
+    participant QueueService as Fork ConfiguredWorkerQueueService
+    participant MetaStore as Fork ConfiguredWorkerQueueMetaStore
+    participant Queue as WorkerJobEvent queue
+
+    Worker->>Connect: connect(requestedWorkerGroupId)
+    Connect-->>Worker: resolved workerGroupId
+    Worker->>Controller: open worker job stream(workerGroupId, maxConcurrency)
+    Controller->>Resolver: resolve(workerGroupId)
+    Resolver-->>Controller: queue subscriptions
+    Controller->>Queue: subscribe to resolved Worker Queue keys
+    Controller-->>Worker: keep gRPC stream registered
+
+    Executor->>QueueService: resolveWorkerQueueForJob(flow, task or trigger)
+    QueueService->>MetaStore: resolveQueueIdsByTags(workerSelector.tags, tenant, match)
+    MetaStore-->>QueueService: ordered matching queue ids
+    QueueService-->>Executor: WorkerQueueRouting(queueId, disposition)
+    Executor->>Queue: emit(queueId, WorkerJobEvent)
+    Queue-->>Controller: keyed job available
+    Controller-->>Worker: dispatch job to subscribed worker
+    Worker-->>Controller: job result
+```
+
+The worker process does not subscribe to the backend `WorkerJobEvent` queue
+directly, and it is not sent the list of Worker Queue ids it serves. It only
+declares a `workerGroupId` when connecting. The controller resolves that group
+with `ConfiguredWorkerQueueResolver`, creates controller-side subscriptions to
+the corresponding Worker Queue keys, and forwards matching jobs to eligible
+workers over the long-lived gRPC worker job stream. The worker then buffers the
+received jobs in its local in-process queue before executing them.
+
+The long-lived gRPC worker job stream infrastructure is not introduced by this
+fork. `GrpcWorkerControllerService`, `WorkerStreamContext`, `WorkerJobDispatcher`,
+and the default `WorkerQueueResolver` already provide the worker stream,
+`workerGroupId`, queue subscription, and response observer plumbing. This fork
+adds `ConfiguredWorkerQueueResolver` to resolve `workerGroupId` from static OSS
+configuration, and tightens `WorkerJobDispatcher` registration bookkeeping so
+worker-group and Worker Queue indices remain consistent when workers reconnect.
+
+Once `ConfiguredWorkerQueueService` returns a `WorkerQueueRouting`, the executor
+normalizes that Worker Queue id into the keyed `WorkerJobEvent` dispatch key and
+emits the job to the existing worker job queue. `WorkerJobDispatcher` receives
+the event through its controller-side `QueueSubscriber`, finds a registered
+worker stream for that Worker Queue with available permits and capacity,
+persists the running state, wraps the job in a `WorkerJobResponse`, and calls
+the stream's `StreamObserver.onNext(...)`. If no subscribed worker has capacity,
+the dispatcher pauses that Worker Queue subscription and requeues the event so
+backpressure stays on the controller side.
+
+Worker Queue matching selects exactly one Worker Queue per job. If a
+`workerSelector.tags` set matches multiple Worker Queue definitions, the
+resolver orders the matching queues and selects one Worker Queue id for that
+`WorkerJob`: the first statically active candidate, or the best-ranked candidate
+when fallback must be applied. The executor emits the job once, using that
+single queue key.
+
+Within the selected Worker Queue, runnable tasks use broadcast dispatch by
+default: the worker-controller dispatches each task simultaneously to every
+worker currently subscribed to that queue, and the task run completes once all
+of them finished. Set `workerSelector.broadcast: false` for classic
+single-worker dispatch. The default and system queues are always
+single-dispatch. Broadcast aggregation currently requires a single
+worker-controller. See
+[Broadcast dispatch](docs/architecture/OSS_WORKER_ROUTING.md#broadcast-dispatch)
+for the semantics and limitations.
+
+See
+[OSS worker routing deployment patterns](docs/architecture/OSS_WORKER_ROUTING_DEPLOYMENT_PATTERNS.md)
+for Mermaid diagrams covering default, dedicated, redundant single-dispatch,
+broadcast, local multi-queue, and `tacogips/kestra-playground` configurations.
+
+### Worker groups, Worker Queues, and worker configuration
+
+In this fork, Worker Groups and Worker Queues are separate concepts:
+
+- `workerGroupId` identifies which Worker Group a worker process belongs to.
+- `groupQueueMappings` maps each Worker Group to the Worker Queues it subscribes
+  to.
+- `queues` defines each Worker Queue and the tags used to select it from
+  `workerSelector.tags`.
+
+A Worker Group is therefore not itself the dispatch queue. It is the worker-side
+subscription group. A Worker Queue is the actual dispatch key used when the
+executor emits a `WorkerJobEvent`.
+
+The routing relationship is:
+
+```text
+worker process
+  -> workerGroupId
+  -> groupQueueMappings[workerGroupId].queues
+  -> subscribed Worker Queue ids
+
+task / trigger / flow
+  -> workerSelector.tags
+  -> queues.*.tags
+  -> matching Worker Queue id
+  -> workers subscribed to that queue
+```
+
+Each worker process only needs to declare its own Worker Group id:
+
+```yaml
+kestra:
+  worker:
+    routing:
+      workerGroupId: gce-gpu
+```
+
+The worker group is chosen from that configuration value. It is not inferred from
+host names, CPU or GPU devices, Kubernetes node labels, or any other runtime
+property. If `workerGroupId` is absent or empty, it is normalized to the default
+worker group.
+
+Controller-side services need the full routing table:
+
+```yaml
+kestra:
+  worker:
+    routing:
+      groupQueueMappings:
+        gce-gpu:
+          queues:
+            - workerQueueId: gpu-jobs
+              reservedPercent: -1
+        gce-cpu:
+          queues:
+            - workerQueueId: cpu-jobs
+              reservedPercent: -1
+      queues:
+        gpu-jobs:
+          tags: [gce, gpu]
+        cpu-jobs:
+          tags: [gce, cpu]
+```
+
+This configuration means:
+
+```text
+gce-gpu workers subscribe to gpu-jobs
+gce-cpu workers subscribe to cpu-jobs
+gpu-jobs is selected by workerSelector tags matching [gce, gpu]
+cpu-jobs is selected by workerSelector tags matching [gce, cpu]
+```
+
+A task, trigger, or flow selects a Worker Queue by tags, not by Worker Group name:
+
+```yaml
+workerSelector:
+  tags: [gpu]
+  match: ALL
+  fallback: WAIT
+```
+
+With the configuration above, `[gpu]` matches the `gpu-jobs` Worker Queue, and
+jobs emitted to `gpu-jobs` are dispatched only to workers in groups subscribed to
+that queue, such as `gce-gpu`.
+
+Worker Groups and Worker Queues do not need to be one-to-one. For example, a
+local deployment can run one Worker Group that subscribes to every routed queue:
+
+```yaml
+kestra:
+  worker:
+    routing:
+      workerGroupId: local-all
+      groupQueueMappings:
+        local-all:
+          queues:
+            - workerQueueId: gpu-jobs
+              reservedPercent: -1
+            - workerQueueId: cpu-jobs
+              reservedPercent: -1
+      queues:
+        gpu-jobs:
+          tags: [gce, gpu]
+        cpu-jobs:
+          tags: [gce, cpu]
+```
+
+For compact deployments, the explicit `groupQueueMappings` block is optional
+when the `workerGroupId` has the same name as a configured Worker Queue. In that
+case, the controller subscribes the worker to the same-named queue.
+
+Every `workerQueueId` referenced from `groupQueueMappings.*.queues` must either
+be a configured entry under `queues` or one of the reserved queues (`default` or
+`system`). Kestra fails configuration loading when a mapping points at an
+undefined Worker Queue.
+
+`reservedPercent` reserves part of a worker's slots for a queue subscription.
+Use `-1` for no reservation. Positive reservation values in one Worker Group
+must sum to at most `100`; Kestra fails configuration loading when a group
+exceeds that total. `mode` defaults to `STRICT`, which keeps reserved slots
+exclusive. `ELASTIC` allows this subscription's idle reserved slots to be
+borrowed by other subscriptions on the same worker.
+
+If a worker advertises an unknown custom `workerGroupId`, the controller logs a
+warning and subscribes it to the default Worker Queue. The reserved `system`
+group still maps to the system queue, and an absent or empty `workerGroupId`
+normalizes to the default group.
+
+Invalid example:
+
+```yaml
+kestra:
+  worker:
+    routing:
+      groupQueueMappings:
+        gce-gpu:
+          queues:
+            - workerQueueId: not-exists-queue
+      queues:
+        gpu-jobs:
+          tags: [gpu]
+```
+
+This is rejected because `not-exists-queue` is subscribed by a Worker Group but
+is not defined under `queues`.
+
+Database impact in this fork:
+
+- No new database tables, columns, indexes, or migration scripts are required for OSS worker group routing.
+- Worker group and worker queue metadata is static and configuration-backed through `kestra.worker.routing`, not repository-backed.
+- Routed jobs keep using the existing `WorkerJobEvent` queue storage; the fork only changes the queue key chosen before dispatch.
+
+If routing is not configured, or a job has no `workerSelector.tags`, Kestra
+keeps the default OSS worker queue behavior. Fallback is applied at routing time
+when no matching queue exists, or when no matched queue is statically routable
+from the configured `groupQueueMappings`. Once a queue is statically routable,
+the job is emitted to that queue; if no connected worker currently serves it,
+the job remains in the durable keyed queue until a matching worker connects.
+
+Operationally, configured queue gauges are registered even before workers
+connect, so `controller.worker.active{worker_queue="<id>"} == 0` combined with
+backend queue lag is the stuck-queue signal. Processes also log and publish a
+`worker.routing.configuration{routing_fingerprint="<sha256>"} 1` gauge so
+operators can compare the static routing table across controller, executor, and
+scheduler processes during rollouts. See
+[OSS Worker Routing](docs/architecture/OSS_WORKER_ROUTING.md) for the full
+fallback semantics, restart order, observability details, and static
+deadline/dead-letter limitation.
 
 ---
 

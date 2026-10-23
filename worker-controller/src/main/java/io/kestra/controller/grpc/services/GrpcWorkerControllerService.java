@@ -62,6 +62,9 @@ public class GrpcWorkerControllerService extends WorkerControllerServiceGrpc.Wor
     private WorkerJobDispatcher workerJobDispatcher;
 
     @Inject
+    private BroadcastTaskCoordinator broadcastTaskCoordinator;
+
+    @Inject
     private WorkerQueueResolver workerQueueResolver;
 
     @Inject
@@ -194,44 +197,79 @@ public class GrpcWorkerControllerService extends WorkerControllerServiceGrpc.Wor
     public void sendWorkerTaskResults(OpaqueData request, StreamObserver<OpaqueData> responseObserver) {
         final MessageFormat messageFormat = MessageFormat.resolve(request.getHeader().getMessageFormat());
         BatchMessage<WorkerTaskResult> message = messageFormat.fromByteString(request.getMessage(), TypeReferences.WORKER_TASK_RESULT);
-        message.records().forEach(workerTaskResult ->
-        {
-            try {
-                workerTaskResultQueue.emit(workerTaskResult);
-
-                // only remove the worker job running once the task has reached a terminal state
-                if (workerTaskResult.getTaskRun().getState().isTerminated()) {
-                    workerJobRunningStateStore.deleteByKey(workerTaskResult.getTaskRun().getId());
-                }
-            } catch (QueueException e) {
-                // If there is a QueueException it can either be caused by the message limit or another queue issue.
-                // We fail the task and try to resend it.
-                WorkerTaskResult failed = new WorkerTaskResult(workerTaskResult.getTaskRun().fail(), workerTaskResult.getOutputs());
-                if (e instanceof MessageTooBigException) {
-                    // If it's a message too big, we remove the outputs
-                    failed = failed.withOutputs(null);
-                }
-                if (e instanceof UnsupportedMessageException) {
-                    // Unsupported queue payloads are most likely caused by a bad output value,
-                    // so retry without outputs instead of crashing the worker/controller loop.
-                    failed = failed.withOutputs(null);
-                }
-                RunContextLogger contextLogger = runContextLoggerFactory.create(workerTaskResult);
-                contextLogger.logger().error("Unable to emit the worker task result to the queue: {}", e.getMessage(), e);
-                try {
-                    this.workerTaskResultQueue.emit(failed);
-
-                    // only remove the worker job running once the task has reached a terminal state
-                    if (failed.getTaskRun().getState().isTerminated()) {
-                        workerJobRunningStateStore.deleteByKey(failed.getTaskRun().getId());
-                    }
-                } catch (QueueException ex) {
-                    log.error("Unable to emit the worker task result for task {} taskrun {}", failed.getTaskRun().getTaskId(), failed.getTaskRun().getId(), e);
-                }
-            }
-        });
+        if (
+            !message.records().stream().allMatch(this::handleWorkerTaskResult)
+        ) {
+            // Worker task results use PER_ITEM gRPC sends. A retryable status makes the worker
+            // re-queue this result instead of acknowledging and losing it.
+            responseObserver.onError(
+                io.grpc.Status.UNAVAILABLE
+                    .withDescription("Unable to persist the worker task result")
+                    .asRuntimeException()
+            );
+            return;
+        }
         responseObserver.onNext(OpaqueData.newBuilder().setHeader(request.getHeader()).build());
         responseObserver.onCompleted();
+    }
+
+    /**
+     * Coordinates and emits one worker task result, then removes the incoming copy or task from
+     * the running-state store only after the result has been handled successfully.
+     */
+    boolean handleWorkerTaskResult(WorkerTaskResult incomingResult) {
+        // Broadcast copies are aggregated (or mapped back to the original task run) before
+        // reaching the executor; non-broadcast results pass through unchanged.
+        WorkerTaskResult workerTaskResult = broadcastTaskCoordinator.onResult(incomingResult).orElse(null);
+        boolean emissionHandled = workerTaskResult == null || emitWorkerTaskResult(workerTaskResult);
+
+        if (emissionHandled && incomingResult.getTaskRun().getState().isTerminated()) {
+            try {
+                // Keyed by the incoming task run id: for a broadcast copy, the state-store entry
+                // uses the copy id, not the original task run id of the emitted result.
+                workerJobRunningStateStore.deleteByKey(incomingResult.getTaskRun().getId());
+            } catch (RuntimeException e) {
+                log.error(
+                    "Unable to delete running state for task run '{}': {}",
+                    incomingResult.getTaskRun().getId(), e.getMessage(), e
+                );
+            }
+        }
+        return emissionHandled;
+    }
+
+    /**
+     * Emits a coordinated task result. Queue payload failures are retried once as a failed result,
+     * while aggregation state is acknowledged only after an emit succeeds.
+     */
+    private boolean emitWorkerTaskResult(WorkerTaskResult workerTaskResult) {
+        try {
+            workerTaskResultQueue.emit(workerTaskResult);
+            broadcastTaskCoordinator.acknowledgeResultEmission(workerTaskResult);
+            return true;
+        } catch (QueueException e) {
+            // If there is a QueueException it can either be caused by the message limit or another queue issue.
+            // We fail the task and try to resend it.
+            WorkerTaskResult failed = new WorkerTaskResult(workerTaskResult.getTaskRun().fail(), workerTaskResult.getOutputs());
+            if (e instanceof MessageTooBigException || e instanceof UnsupportedMessageException) {
+                // Oversized or unsupported outputs are removed so the terminal failure can still be emitted.
+                failed = failed.withOutputs(null);
+            }
+            RunContextLogger contextLogger = runContextLoggerFactory.create(workerTaskResult);
+            contextLogger.logger().error("Unable to emit the worker task result to the queue: {}", e.getMessage(), e);
+            try {
+                workerTaskResultQueue.emit(failed);
+                broadcastTaskCoordinator.acknowledgeResultEmission(failed);
+                return true;
+            } catch (QueueException ex) {
+                broadcastTaskCoordinator.releaseResultEmission(workerTaskResult);
+                log.error(
+                    "Unable to emit the worker task result for task {} taskrun {}",
+                    failed.getTaskRun().getTaskId(), failed.getTaskRun().getId(), ex
+                );
+                return false;
+            }
+        }
     }
 
     @Override
@@ -281,22 +319,41 @@ public class GrpcWorkerControllerService extends WorkerControllerServiceGrpc.Wor
     public void sendWorkerLogEntries(OpaqueData request, StreamObserver<OpaqueData> responseObserver) {
         final MessageFormat messageFormat = MessageFormat.resolve(request.getHeader().getMessageFormat());
         BatchMessage<LogEntry> message = messageFormat.fromByteString(request.getMessage(), TypeReferences.LOG_ENTRY);
-        if (!message.records().isEmpty()) {
-            logEntryEmitter.emits(message.records());
+        List<LogEntry> logEntries = message.records();
+        if (!logEntries.isEmpty()) {
+            logEntryEmitter.emits(logEntries.stream().map(this::remapBroadcastLogEntry).toList());
         }
         responseObserver.onNext(OpaqueData.newBuilder().setHeader(request.getHeader()).build());
         responseObserver.onCompleted();
+    }
+
+    /**
+     * Remaps a log entry emitted by a broadcast copy to the original task run so the logs of
+     * every worker appear under the task run visible in the execution.
+     */
+    private LogEntry remapBroadcastLogEntry(LogEntry logEntry) {
+        String originTaskRunId = broadcastTaskCoordinator.resolveOriginTaskRunId(logEntry.getTaskRunId());
+        return originTaskRunId == null ? logEntry : logEntry.toBuilder().taskRunId(originTaskRunId).build();
     }
 
     @Override
     public void sendWorkerMetricEntries(OpaqueData request, StreamObserver<OpaqueData> responseObserver) {
         final MessageFormat messageFormat = MessageFormat.resolve(request.getHeader().getMessageFormat());
         BatchMessage<MetricEntry> message = messageFormat.fromByteString(request.getMessage(), TypeReferences.METRIC_ENTRY);
-        if (!message.records().isEmpty()) {
-            metricEntryQueue.emitAsync(message.records());
+        List<MetricEntry> metricEntries = message.records();
+        if (!metricEntries.isEmpty()) {
+            metricEntryQueue.emitAsync(metricEntries.stream().map(this::remapBroadcastMetricEntry).toList());
         }
         responseObserver.onNext(OpaqueData.newBuilder().setHeader(request.getHeader()).build());
         responseObserver.onCompleted();
+    }
+
+    /**
+     * Remaps a metric entry emitted by a broadcast copy to the original task run.
+     */
+    private MetricEntry remapBroadcastMetricEntry(MetricEntry metricEntry) {
+        String originTaskRunId = broadcastTaskCoordinator.resolveOriginTaskRunId(metricEntry.getTaskRunId());
+        return originTaskRunId == null ? metricEntry : metricEntry.toBuilder().taskRunId(originTaskRunId).build();
     }
 
     /**

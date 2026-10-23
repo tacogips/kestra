@@ -34,11 +34,11 @@ Before you start writing code, comment on the issue you would like to work on an
 
 #### Requirements
 The following dependencies are required to build Kestra locally:
-- Java 25+
-- Node 24+ and npm 11+
-- Python 3, pip and python venv
+- [mise](https://mise.jdx.dev/)
 - Docker & Docker Compose
 - an IDE (Intellij IDEA, Eclipse or VS Code)
+
+mise installs the required Java 25, Node 24, npm 11 and Python 3 versions from the repository configuration.
 
 Thanks to the Kestra community, if using VSCode, you can also start development on either the frontend or backend with a bootstrapped docker container without the need to manually set up the environment.
 
@@ -51,7 +51,11 @@ To start contributing:
 ```shell
 git clone git@github.com:{YOUR_USERNAME}/kestra.git
 cd kestra
+mise trust
+mise run setup
 ```
+
+The setup task installs the development tools, frontend dependencies and the pre-commit hook. Run project commands such as `mise run build` and `mise run test` from the repository root.
 
 #### Develop on the backend
 The backend is made with [Micronaut](https://micronaut.io).

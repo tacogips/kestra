@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import io.kestra.core.utils.Enums;
 
+import io.micronaut.core.annotation.Introspected;
 import io.micronaut.core.annotation.Nullable;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -27,6 +28,7 @@ import jakarta.validation.constraints.NotBlank;
  * {@code mode} controls how this subscription's reserved slots interact with other
  * subscriptions on the same worker — see {@link Mode}.
  */
+@Introspected
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record QueueSubscription(
     @NotBlank String workerQueueId,

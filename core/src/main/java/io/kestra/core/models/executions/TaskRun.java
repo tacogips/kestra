@@ -76,6 +76,15 @@ public class TaskRun implements TenantInterface {
     Boolean forceExecution;
 
     /**
+     * Set only on per-worker copies of a broadcast task (never on task runs stored in an
+     * execution): identifies the original task run and the worker the copy is pinned to.
+     */
+    @With
+    @Nullable
+    @Hidden
+    TaskRunBroadcast broadcast;
+
+    /**
      * @deprecated should only be used inside the pre-2.0 compatibility layer.
      */
     @Hidden
@@ -128,6 +137,7 @@ public class TaskRun implements TenantInterface {
             this.iteration,
             this.dynamic,
             this.forceExecution,
+            this.broadcast,
             this.outputs
         );
     }
@@ -157,6 +167,7 @@ public class TaskRun implements TenantInterface {
             this.iteration,
             this.dynamic,
             this.forceExecution,
+            this.broadcast,
             this.outputs
         );
     }
@@ -183,6 +194,7 @@ public class TaskRun implements TenantInterface {
             this.iteration,
             this.dynamic,
             this.forceExecution,
+            this.broadcast,
             this.outputs
         );
     }
