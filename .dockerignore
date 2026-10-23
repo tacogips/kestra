@@ -1,6 +1,8 @@
 *
 
 !Dockerfile
+!dev-tools
+!dev-tools/distrust-emudhra.sh
 !docker
 !docker/**
 !docker/app

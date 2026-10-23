@@ -21,7 +21,7 @@ dependencies {
     def opensearchVersion = "3.9.0"
     def opensearchRestVersion = "3.8.0"
     def flyingSaucerVersion = "10.5.0"
-    def jacksonVersion = "2.22.1"
+    def jacksonVersion = "2.22.4"
     def jacksonAnnotationsVersion = "2.22"
     def jugVersion = "5.2.0"
     def langchain4jVersion = "1.18.1"
@@ -32,6 +32,8 @@ dependencies {
     api enforcedPlatform("com.fasterxml.jackson:jackson-bom:$jacksonVersion")
     api enforcedPlatform("org.slf4j:slf4j-api:$slf4jVersion")
     api enforcedPlatform("org.eclipse.jetty:jetty-bom:$jettyVersion")
+    // Keep Netty aligned while overriding the vulnerable version in the Micronaut BOM.
+    api enforcedPlatform("io.netty:netty-bom:4.2.19.Final")
     api platform("io.micronaut.platform:micronaut-platform:4.10.18")
     // we define cloud bom here for GCP, Azure and AWS so they are aligned for all plugins that use them (secret, storage, oss and ee plugins)
     api platform('com.google.cloud:libraries-bom:26.86.0')

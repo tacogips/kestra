@@ -1,0 +1,4 @@
+io.kestra.storage:storage-gcs:1.2.0
+io.kestra.plugin:plugin-script-shell:1.9.0
+io.kestra.plugin:plugin-jdbc-postgres:1.15.4
+io.kestra.plugin:plugin-email:1.5.1
