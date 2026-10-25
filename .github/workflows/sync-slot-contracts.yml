@@ -8,6 +8,13 @@ on:
     paths:
       - "ui/packages/slot-contracts/src/**"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-slot-contracts-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   sync:
     name: Sync contracts to kestra-io/artifact-sdk
@@ -17,13 +24,15 @@ jobs:
       CHANGESET_FILE: .changeset/sync-slot-contracts.md
     steps:
       - name: Checkout kestra
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # The branch, the commit and the PR in artifact-sdk are all attributed to whoever owns the
       # token this job pushes with, so mint kestrabot's instead of using a maintainer's own.
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         with:
           app-id: ${{ secrets.GH_BOT_APP_ID }}
           private-key: ${{ secrets.GH_BOT_PRIVATE_KEY }}
@@ -31,16 +40,16 @@ jobs:
           repositories: artifact-sdk
 
       - name: Checkout artifact-sdk
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: kestra-io/artifact-sdk
           token: ${{ steps.app-token.outputs.token }}
           path: artifact-sdk
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24.x
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: ui/package-lock.json
 

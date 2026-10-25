@@ -25,6 +25,9 @@ concurrency:
   group: auto-translate-ui-keys-${{ github.ref_name }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   # A schedule always fires from the default branch, so this one workflow file drives every branch
   # in the list below: each gets its own checkout, its own generator run and its own bot PR. Adding a
@@ -33,6 +36,7 @@ jobs:
   plan:
     name: Branches
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       branches: ${{ steps.list.outputs.branches }}
     steps:
@@ -49,6 +53,9 @@ jobs:
 
   translations:
     name: Translations (${{ matrix.branch }})
+    permissions:
+      contents: write
+      pull-requests: write
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -59,16 +66,16 @@ jobs:
       matrix:
         branch: ${{ fromJSON(needs.plan.outputs.branches) }}
     steps:
-        - uses: actions/checkout@v7
+        - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
           name: Checkout
           with:
             ref: ${{ matrix.branch }}
             fetch-depth: 0
 
         - name: Set up Node
-          uses: actions/setup-node@v7
+          uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
           with:
-            node-version: "24.x"
+            node-version: "24.22.1"
 
         - name: Install Node dependencies
           run: npm ci
