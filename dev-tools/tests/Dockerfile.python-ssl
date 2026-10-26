@@ -1,0 +1,11 @@
+ARG BASE_IMAGE=kestra-python-ssl-base:local
+
+FROM ${BASE_IMAGE} AS bundled-python
+RUN /app/.venv/bin/python -c 'import ssl, sys; from amazon.ion import simpleion; assert sys.version_info[:2] == (3, 14); assert simpleion.c_ext; assert all(simpleion.loads(simpleion.dumps({"value": 42}, binary=binary))["value"] == 42 for binary in (True, False)); ssl.create_default_context()'
+
+FROM python:3.14.7-slim-trixie AS python
+
+FROM ${BASE_IMAGE} AS copied-python
+USER root
+COPY --from=python /usr/local/ /usr/local/
+RUN python3 -c 'import ssl; context = ssl.create_default_context(); assert context.cert_store_stats()["x509_ca"] > 0; print(ssl.OPENSSL_VERSION)'

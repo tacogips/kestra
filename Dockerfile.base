@@ -1,10 +1,6 @@
 ARG JRE_VERSION="25"
-# Pin the Ubuntu release explicitly. The unsuffixed `-jre` tag floats to the
-# latest Ubuntu, which silently drifted to 26.04 (Python 3.14) and broke the
-# build: `amazon-ion` (a `kestra` pip dep) has no cp314 wheel, so pip falls back
-# to a source build that needs cmake/gcc. 24.04 LTS ships Python 3.12, for which
-# a wheel exists. Pinning also keeps the base OS (and its UID layout) stable.
-FROM eclipse-temurin:${JRE_VERSION}-jre-noble
+# Ubuntu 26.04 provides the OpenSSL symbols required by Python runtimes copied from Debian Trixie.
+FROM eclipse-temurin:${JRE_VERSION}-jre-resolute
 
 ARG UV_VERSION="0.13.5"
 ARG WITH_PYTHON="false"
@@ -32,10 +28,12 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
 RUN if [ "$WITH_PYTHON" = "true" ]; then \
         apt-get update -y && \
         apt-get install -y --no-install-recommends python3 python-is-python3 python3-pip && \
-        apt-get clean && \
-        rm -rf /var/lib/apt/lists/* && \
+        apt-get install -y --no-install-recommends build-essential cmake python3-dev && \
         uv venv /app/.venv && \
-        PURE_PYTHON=1 uv pip install --python /app/.venv/bin/python kestra 'certifi>=2026.10.19'; \
+        uv pip install --python /app/.venv/bin/python kestra 'certifi>=2026.10.19' && \
+        apt-get purge -y --auto-remove build-essential cmake python3-dev && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*; \
     fi
 
 COPY dev-tools/distrust-emudhra.sh /tmp/distrust-emudhra.sh
