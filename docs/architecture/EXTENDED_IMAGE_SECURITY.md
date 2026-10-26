@@ -13,8 +13,10 @@ for this image; the playground's Artifact Registry deployment remains separate.
 - Remove the eMudhra incident's trusted roots from the Ubuntu and Java trust
   stores, including the Sectigo cross-signing path. Java aliases differ by
   vendor, so the removal script matches root certificate SHA-256 fingerprints.
-- Rebuild on Ubuntu 24.04 with upgraded OS packages and uv 0.13.5; Python variants
+- Rebuild on Ubuntu 26.04 with upgraded OS packages and uv 0.13.5; Python variants
   explicitly require certifi 2026.10.19 or later.
+- Build the optional Python 3.14 `amazon-ion` C extension with temporary compiler,
+  CMake and Python development packages, then remove those build dependencies.
 - Align Jackson at 2.22.4 and Netty at 4.2.19.Final without changing the release's
   Micronaut major version.
 - Rebuild Kubernetes plugin 1.12.1 from pinned upstream source commit
@@ -63,6 +65,23 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 Verify both architectures with Trivy before updating the stable tag. Preserve an
 immutable source-commit tag and the resulting manifest digest for rollback.
+
+## Python runtime regression check
+
+Ubuntu 26.04 supplies the OpenSSL symbols needed by Python 3.14 copied from
+Debian Trixie. Verify both the copied runtime and the optional bundled runtime:
+
+```bash
+docker build -f Dockerfile.base -t kestra-python-ssl-base:local .
+docker build -f dev-tools/tests/Dockerfile.python-ssl .
+docker build -f Dockerfile.base --build-arg WITH_PYTHON=true \
+    -t kestra-python-ssl-full-base:local .
+docker build -f dev-tools/tests/Dockerfile.python-ssl --target bundled-python \
+    --build-arg BASE_IMAGE=kestra-python-ssl-full-base:local .
+```
+
+Repeat with `--platform linux/amd64` and `--platform linux/arm64` to check both
+supported architectures.
 
 ## Trust regression check
 
