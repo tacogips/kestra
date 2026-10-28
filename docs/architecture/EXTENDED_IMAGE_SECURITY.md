@@ -8,6 +8,23 @@ The upstream base is **v2.0.7**, commit
 Docker Hub is the explicitly requested target
 for this image; the playground's Artifact Registry deployment remains separate.
 
+## Cumulative release: 2.0.7-security-20261028
+
+Use `tacogips/kestra-extended:2.0.7-security-20261028` for the cumulative security
+release. It includes the eMudhra trust-store remediation, dependency and plugin
+updates described below, Ubuntu 26.04 Python SSL compatibility, and the system
+Brotli fix (`libbrotli1` 1.2.0-3ubuntu0.1 on Ubuntu 26.04).
+
+This release adds OS security updates to
+`tacogips/kestra-extended:2.0.7-python-ssl-d7e5430337`, retaining its application
+and plugins. The older `2.0.7-brotli-eff9c74f0c` tag names the same cumulative
+image; it does not contain only the Brotli fix.
+
+Both release tags and `oss-worker-routing` resolve to the AMD64/ARM64 manifest
+`sha256:6bb301abe0135b59ff843a74bf7e26be4b8313e5763963b5a36cb7bbb18e2f75`.
+Use versioned security tags for deployments and retain existing release tags
+for rollback.
+
 ## October 2026 remediation
 
 - Remove the eMudhra incident's trusted roots from the Ubuntu and Java trust
