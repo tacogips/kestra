@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=kestra-brotli-base:local
+ARG BASE_IMAGE=tacogips/kestra-extended:2.0.7-brotli-eff9c74f0c
 
 FROM ${BASE_IMAGE} AS patched
 USER root
