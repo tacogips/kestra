@@ -1,5 +1,5 @@
 ARG BASE_IMAGE="ghcr.io/kestra-io/kestra-base:latest-slim"
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS security-updates
 
 USER root
 
@@ -15,6 +15,12 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/app/.venv/bin:$PATH"
+
+USER kestra
+
+FROM security-updates
+
+USER root
 
 COPY --chown=kestra:kestra docker /
 
