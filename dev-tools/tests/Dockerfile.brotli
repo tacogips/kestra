@@ -1,0 +1,11 @@
+ARG BASE_IMAGE=kestra-brotli-base:local
+
+FROM ${BASE_IMAGE} AS patched
+USER root
+COPY dev-tools/verify-brotli.sh /tmp/verify-brotli.sh
+RUN sh /tmp/verify-brotli.sh
+
+FROM patched AS vulnerable
+RUN apt-get update -qq && \
+    apt-get install -y --allow-downgrades libbrotli1=1.2.0-3build1 && \
+    if sh /tmp/verify-brotli.sh; then exit 1; fi
