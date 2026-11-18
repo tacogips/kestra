@@ -630,6 +630,7 @@ tasks.register('writeExecutableJar') {
 
     final shadowJarFile =  tasks.shadowJar.outputs.files.singleFile
     inputs.file shadowJarFile
+    inputs.files("gradle/jar/selfrun.sh", "gradle/jar/selfrun.bat")
     outputs.file executable
     outputs.cacheIf { true }
 

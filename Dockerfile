@@ -1,6 +1,9 @@
 ARG BASE_IMAGE="ghcr.io/kestra-io/kestra-base:latest-slim"
 FROM ${BASE_IMAGE} AS security-updates
 
+# Mitigate CVE-2026-114938 even when BASE_IMAGE still ships an affected JVM.
+ENV JAVA_TOOL_OPTIONS="-XX:-UseBASE64Intrinsics"
+
 USER root
 
 COPY dev-tools/distrust-emudhra.sh /tmp/distrust-emudhra.sh

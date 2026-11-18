@@ -2,6 +2,9 @@ ARG JRE_VERSION="25"
 # Ubuntu 26.04 provides the OpenSSL symbols required by Python runtimes copied from Debian Trixie.
 FROM eclipse-temurin:${JRE_VERSION}-jre-resolute
 
+# Mitigate CVE-2026-114938 while patched Temurin images roll out.
+ENV JAVA_TOOL_OPTIONS="-XX:-UseBASE64Intrinsics"
+
 ARG UV_VERSION="0.13.5"
 ARG WITH_PYTHON="false"
 

@@ -25,6 +25,22 @@ Both release tags and `oss-worker-routing` resolve to the AMD64/ARM64 manifest
 Use versioned security tags for deployments and retain existing release tags
 for rollback.
 
+## November 2026 Java2Shell mitigation
+
+New builds disable the JVM's Base64 intrinsics by default in the base and runtime
+images and in the standalone launchers. For an existing deployment or a direct
+`java -jar` launch, add `-XX:-UseBASE64Intrinsics` to the JVM options and restart
+Kestra. Eclipse Temurin 25.0.5.1+2 and 21.0.13.1+2 contain the vendor fix for
+CVE-2026-114938. [Adoptium's advisory](https://adoptium.net/news/2026/11/temurin-november-2026-cspu-java4shell/)
+
+Check the effective JVM option in a locally built image by passing its tag as
+`BASE_IMAGE`:
+
+```bash
+docker build -f dev-tools/tests/Dockerfile.java2shell \
+    --build-arg BASE_IMAGE=kestra-security-base:local .
+```
+
 ## October 2026 remediation
 
 - Remove the eMudhra incident's trusted roots from the Ubuntu and Java trust

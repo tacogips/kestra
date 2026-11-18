@@ -32,5 +32,5 @@ JAVA_UNSAFE_MEMORY_ACCESS="--sun-misc-unsafe-memory-access=allow"
 KESTRA_JAVA_OPTS="-XX:MaxRAMPercentage=50.0"
 
 # Exec
-exec java ${KESTRA_JAVA_OPTS} ${JAVA_OPTS} ${JAVA_ADD_OPENS} ${JAVA_UNSAFE_MEMORY_ACCESS} --enable-native-access=ALL-UNNAMED -jar "$0" "$@"
+exec java ${KESTRA_JAVA_OPTS} ${JAVA_OPTS} -XX:-UseBASE64Intrinsics ${JAVA_ADD_OPENS} ${JAVA_UNSAFE_MEMORY_ACCESS} --enable-native-access=ALL-UNNAMED -jar "$0" "$@"
 exit 127

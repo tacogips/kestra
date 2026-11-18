@@ -1,0 +1,5 @@
+ARG BASE_IMAGE=kestra-java2shell-runtime:verify
+FROM ${BASE_IMAGE}
+
+RUN flags="$(java -XX:+PrintFlagsFinal -version)" && \
+    printf '%s\n' "$flags" | grep -E 'UseBASE64Intrinsics[[:space:]]*=[[:space:]]*false[[:space:]]'
